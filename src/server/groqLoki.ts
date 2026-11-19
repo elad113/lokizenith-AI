@@ -211,7 +211,11 @@ export class GroqRateLimiter {
   private snapshots = new Map<string, GroqRateSnapshot>();
   private cooledUntil = new Map<string, number>();
 
-  constructor(private now: () => number = Date.now) {}
+  private now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.now = now;
+  }
 
   decide(primary: string, fallback: string, estimatedTokens: number): { model: string; fast: boolean } | { model: null } {
     if (!this.blocked(primary, estimatedTokens)) return { model: primary, fast: false };

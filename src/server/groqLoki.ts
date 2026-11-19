@@ -210,7 +210,6 @@ export class GroqRateLimiter {
   private tokens = new Map<string, TokenEvent[]>();
   private snapshots = new Map<string, GroqRateSnapshot>();
   private cooledUntil = new Map<string, number>();
-
   private now: () => number;
 
   constructor(now: () => number = Date.now) {

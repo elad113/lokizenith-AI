@@ -7,7 +7,9 @@ import {
   analyzeAndFixLslScript,
   simulateLslExecution,
   generateOfflineProfessionalLsl,
+  checkLslIncremental,
 } from './lslSpecialist.ts';
+import { LSL_FUNCTION_NAMES } from './lslChecker.ts';
 
 test('buildLslSystemPrompt enforces LSL2/Mono compiler rules in new and edit modes', () => {
   const newSys = buildLslSystemPrompt({ mode: 'new', comments: true });
@@ -140,4 +142,183 @@ test('generateOfflineProfessionalLsl emits valid compilable pro scripts across a
     assert.equal(audit.valid, true, `Expected valid LSL for "${t}", errors: ${audit.errors.join('; ')}`);
     assert.ok(audit.stats.events >= 2);
   }
+});
+
+test('LSL checker flags the 12 required compile errors and accepts a long script quickly', () => {
+  const expectError = (code: string, needle: RegExp) => {
+    const res = analyzeAndFixLslScript(code);
+    assert.equal(res.valid, false, `expected invalid for ${code}`);
+    assert.ok(res.errors.some((e) => needle.test(e)), `errors [${res.errors.join(' | ')}] missing ${needle}`);
+  };
+
+  expectError('default{state_entry(){llSay(0,"hi")}}', /missing semicolon/i);
+  expectError('default{state_entry(){llSay("hi");}}', /llSay expects 2/i);
+  expectError('default{state_entry(){llSayy(0,"hi");}}', /unknown function llSayy/i);
+  expectError('default{touch_start(string n){}}', /touch_start parameter must be integer/i);
+  expectError('default{} foo(){}', /function declared after state/i);
+  expectError('foo(){ state two; } default{}', /state change in function/i);
+  expectError('default{state_entry(){ x = 5; }}', /undeclared variable 'x'/i);
+  expectError('integer g = llGetUnixTime(); default{}', /non-constant global initialiser/i);
+  expectError('default{state_entry(){ integer i = "5"; }}', /type mismatch/i);
+  expectError('default{state_entry(){ switch(1){} }}', /switch not in LSL/i);
+  expectError('default{state_entry(){ state missing; }}', /unknown state/i);
+
+  expectError('default{ state_entry(){} state_entry(){} }', /declared twice/i);
+  expectError('state_entry(){ llOwnerSay("x"); } default{}', /outside any state/i);
+  expectError('default{state_entry(){ integer a; integer a; }}', /declared twice/i);
+  expectError('default{state_entry(){ vector v = <1.0, 2.0>; }}', /vector built with 2 components/i);
+  expectError('default{state_entry(){ return 1; }}', /return with a value inside an event/i);
+  expectError('integer foo(){ integer x = 1; } default{}', /missing a return/i);
+  expectError('default{state_entry(){ float f = .5f; }}', /float literal/i);
+  expectError('default{state_entry(){ if (1 === 1) { } }}', /=== is not valid LSL/i);
+  expectError('default{state_entry(){ while (1) { break; } }}', /break not in LSL/i);
+  expectError('default{state_entry(){ integer n = 1; n += "nope"; }}', /type mismatch/i);
+
+  const listenWarn = analyzeAndFixLslScript('default{state_entry(){ llListen(0, "", NULL_KEY, ""); }}');
+  assert.ok(listenWarn.warnings.some((w) => /channel 0/i.test(w)));
+
+  const timerWarn = analyzeAndFixLslScript('default{state_entry(){ llSetTimerEvent(2.0); }}');
+  assert.ok(timerWarn.warnings.some((w) => /llSetTimerEvent/i.test(w)));
+
+  const httpWarn = analyzeAndFixLslScript('default{state_entry(){ llHTTPRequest("https://example.com", [], ""); }}');
+  assert.ok(httpWarn.warnings.some((w) => /http_response/i.test(w)));
+
+  const huge = 'default{state_entry(){ llOwnerSay("' + 'x'.repeat(12000) + '"); }}';
+  const mem = analyzeAndFixLslScript(huge);
+  assert.ok(mem.warnings.some((w) => /55 KB/i.test(w)));
+
+  assert.ok(LSL_FUNCTION_NAMES.includes('llSay'));
+  assert.ok(LSL_FUNCTION_NAMES.includes('llSetLinkPrimitiveParamsFast'));
+  assert.ok(LSL_FUNCTION_NAMES.length > 150);
+
+  const lines: string[] = [
+    '// Vendor HUD — touch menu, listen, timer, dataserver',
+    'integer gChan = -88021;',
+    'integer gHandle = 0;',
+    'integer gPage = 0;',
+    'integer gLive = FALSE;',
+    'key gOwner = NULL_KEY;',
+    'key gQuery = NULL_KEY;',
+    'integer gStep = 0;',
+    'string gCard = "VendorConfig";',
+    'list gNames;',
+    '',
+    'string productLabel(integer idx)',
+    '{',
+    '    if (idx < 0) return "none";',
+    '    return "Item " + (string)idx;',
+    '}',
+    '',
+    'openPage(key who, integer page)',
+    '{',
+    '    llListenRemove(gHandle);',
+    '    gHandle = llListen(gChan, "", who, "");',
+    '    gLive = TRUE;',
+    '    gPage = page;',
+    '    llSetTimerEvent(30.0);',
+    '    llDialog(who, "Vendor page " + (string)page, ["Next", "Back", "Buy", "Info", "Close"], gChan);',
+    '}',
+    '',
+    'default',
+    '{',
+    '    state_entry()',
+    '    {',
+    '        gOwner = llGetOwner();',
+    '        llSetText("Vendor HUD", <0.2, 1.0, 0.6>, 1.0);',
+    '        llOwnerSay("Vendor ready");',
+    '    }',
+    '',
+    '    touch_start(integer total_number)',
+    '    {',
+    '        key who = llDetectedKey(0);',
+    '        if (who != gOwner)',
+    '        {',
+    '            llRegionSayTo(who, 0, "Owner only");',
+    '            return;',
+    '        }',
+    '        openPage(who, 0);',
+    '    }',
+    '',
+    '    listen(integer channel, string name, key id, string message)',
+    '    {',
+    '        if (channel != gChan || id != gOwner) return;',
+    '        if (message == "Close")',
+    '        {',
+    '            llSetTimerEvent(0.0);',
+    '            llListenRemove(gHandle);',
+    '            gLive = FALSE;',
+    '            return;',
+    '        }',
+    '        if (message == "Next")',
+    '        {',
+    '            openPage(id, gPage + 1);',
+    '            return;',
+    '        }',
+    '        if (message == "Back")',
+    '        {',
+    '            if (gPage > 0) openPage(id, gPage - 1);',
+    '            return;',
+    '        }',
+    '        if (message == "Info")',
+    '        {',
+    '            gQuery = llGetNotecardLine(gCard, 0);',
+    '            return;',
+    '        }',
+  ];
+  for (let n = 0; n < 28; n++) {
+    lines.push(`        if (message == "B${n}")`);
+    lines.push('        {');
+    lines.push(`            llRegionSayTo(id, 0, productLabel(${n}));`);
+    lines.push('            llSetTimerEvent(0.0);');
+    lines.push('            return;');
+    lines.push('        }');
+  }
+  lines.push('    }');
+  lines.push('');
+  lines.push('    timer()');
+  lines.push('    {');
+  lines.push('        llSetTimerEvent(0.0);');
+  lines.push('        llListenRemove(gHandle);');
+  lines.push('        gLive = FALSE;');
+  lines.push('        llOwnerSay("Menu timed out");');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    dataserver(key queryid, string data)');
+  lines.push('    {');
+  lines.push('        if (queryid != gQuery) return;');
+  lines.push('        if (data == EOF)');
+  lines.push('        {');
+  lines.push('            gQuery = NULL_KEY;');
+  lines.push('            return;');
+  lines.push('        }');
+  lines.push('        gNames += [data];');
+  lines.push('        gStep = gStep + 1;');
+  lines.push('        gQuery = llGetNotecardLine(gCard, gStep);');
+  lines.push('        llOwnerSay(data);');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    changed(integer change)');
+  lines.push('    {');
+  lines.push('        if (change & CHANGED_OWNER) llResetScript();');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    on_rez(integer start_param)');
+  lines.push('    {');
+  lines.push('        llResetScript();');
+  lines.push('    }');
+  lines.push('}');
+  while (lines.length < 220) lines.push('// pad');
+  const script = lines.join('\n');
+  assert.ok(script.split('\n').length >= 220);
+  const t0 = performance.now();
+  const audit = analyzeAndFixLslScript(script);
+  const dt = performance.now() - t0;
+  assert.equal(audit.valid, true, audit.errors.join(' | '));
+  assert.equal(audit.errors.length, 0);
+  assert.ok(dt < 50, `checker took ${dt.toFixed(1)}ms`);
+
+  const partial = checkLslIncremental('default\n{\nstate_entry()\n{\n    llSay(0, "hi"');
+  assert.equal(partial.errors.length, 0);
+  const doneLine = checkLslIncremental('default{state_entry(){llSay(0,"hi")}}');
+  assert.ok(doneLine.errors.some((e) => /semicolon/i.test(e)));
 });

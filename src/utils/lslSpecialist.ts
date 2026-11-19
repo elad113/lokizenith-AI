@@ -78,7 +78,7 @@ ${wantComments ? 'Brief comments on changes.' : 'Minimal comments.'}
 Start line 1 with \`\`\`lsl and output ONLY the updated code block.`;
   }
 
-  return `Principal Second Life LSL2/Mono Scripter. Write compact, 100% compilable LSL fast (45-110 lines, zero bloat/TODOs).
+  return `Principal Second Life LSL2/Mono Scripter. Write compact, 100% compilable LSL fast (honor an explicit length when the user asks for one, otherwise stay compact, zero bloat/TODOs).
 Order: typed globals -> concise helpers (NO "void" keyword) -> default { ... }.
 Types: integer, float, string, key, vector, rotation, list. Constants: TRUE, FALSE, NULL_KEY, ZERO_VECTOR, ZERO_ROTATION.
 Best practices: llListenRemove before llListen, CHANGED_OWNER/on_rez reset, llSetLinkPrimitiveParamsFast, llRegionSayTo.${visionRule}

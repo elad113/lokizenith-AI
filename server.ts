@@ -99,6 +99,7 @@ import {
   simulateLslExecution,
   generateOfflineProfessionalLsl,
 } from './src/utils/lslSpecialist.ts';
+import { planGroqAttempt, streamGroqGuarded } from './src/server/groqLoki.ts';
 import {
   verifyAndRankSources,
   classifyTrustTier,
@@ -5507,6 +5508,33 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
     };
 
     try {
+      // Groq first when GROQ_API_KEY is set. A missing key, a 429, or an empty
+      // response falls through to the existing Gemini path with no client notice.
+      const groqPlan = planGroqAttempt();
+      if (groqPlan.action === 'request' && parsedImages.length === 0) {
+        const groqOut = await streamGroqGuarded({
+          apiKey: String(process.env.GROQ_API_KEY || ''),
+          model: groqPlan.model,
+          maxTokens: langId === 'lsl' ? 8000 : 5120,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userText },
+          ],
+          onDelta: (t) => {
+            sentAny = true;
+            streamedAcc += t;
+            writeChunk(t);
+          },
+        });
+        if (groqOut.ok || sentAny) {
+          if (cacheKey && streamedAcc.length > 20) setLokiCodeCached(cacheKey, streamedAcc);
+          finishStream();
+          return;
+        }
+        sentAny = false;
+        streamedAcc = '';
+      }
+
       // 0. Sub-5ms LRU cache hit for repeated prompts (zero upstream wait)
       if (cacheKey) {
         const cached = getLokiCodeCached(cacheKey);

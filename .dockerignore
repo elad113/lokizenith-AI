@@ -1,0 +1,10 @@
+node_modules
+dist
+android
+.git
+.env
+.env.*
+!.env.example
+/benches*.png
+.lz-data
+.lokizen-api-keys.json

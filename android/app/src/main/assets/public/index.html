@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lokizenith AI</title>
+<meta name="description" content="Lokizenith AI — chat, code, create. Made by Lokiz Studios.">
+<meta name="theme-color" content="#030806">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2300ff9c'/%3E%3Cstop offset='1' stop-color='%23007a4a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='%23030806'/%3E%3Cpath d='M20 14v36h26' stroke='url(%23g)' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='44' cy='22' r='6' fill='%2300ff9c'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/v22.css">
+<meta property="og:title" content="Lokizenith AI" />
+<meta property="og:description" content="An advanced AI platform for chatting, coding, and creative tasks featuring voice interaction, design tools, and interactive learning." />
+<meta property="og:url" content="https://blazing-lodge-45jt.here.now/" />
+<meta property="og:type" content="website" />
+<meta property="og:image" content="https://here.now/og/blazing-lodge-45jt.jpg" />
+<meta property="og:image:width" content="1280" />
+<meta property="og:image:height" content="720" />
+<meta name="twitter:image" content="https://here.now/og/blazing-lodge-45jt.jpg" />
+<meta name="twitter:card" content="summary_large_image" />
+  <script type="module" crossorigin src="/assets/index-P2Xu9kJm.js"></script>
+</head>
+<body>
+<canvas id="bg" aria-hidden="true"></canvas>
+<div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+<div class="grain" aria-hidden="true"></div>
+
+<div class="app" id="app">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="logo"><svg viewBox="0 0 64 64"><path d="M20 14v36h26" /><circle cx="44" cy="22" r="6"/></svg></div>
+      <div class="brand-text"><b>Lokizenith</b><span>AI</span></div>
+      <button class="icon-btn only-mobile" id="closeSidebar" aria-label="Close menu">✕</button>
+    </div>
+
+    <button class="btn-new" id="newChat"><span class="plus">＋</span> New chat <kbd>Ctrl K</kbd></button>
+    <button class="btn-lokicode" id="openLokiCode">
+      <span class="lc-icon">&lt;/&gt;</span>
+      <span class="lc-text"><b>LokiCode</b><small>Write · Run · Ship</small></span>
+      <span class="lc-arrow">›</span>
+    </button>
+    <button class="btn-lokicode btn-lessons" id="openLessons">
+      <span class="lc-icon">🎓</span>
+      <span class="lc-text"><b>LokiLessons</b><small>Learn · Practice · Ace it</small></span>
+      <span class="lc-arrow">›</span>
+    </button>
+
+    <button class="btn-lokicode btn-changelog" id="openChangelog">
+      <span class="lc-icon">🗒</span>
+      <span class="lc-text"><b>Changelog</b><small>What's new · v2.2</small></span>
+      <span class="cl-badge" aria-hidden="true"></span><span class="lc-arrow">›</span>
+    </button>
+
+    <div class="search-wrap">
+      <input id="historySearch" type="search" placeholder="Search chats…" autocomplete="off">
+    </div>
+
+    <div class="history" id="history" role="list"></div>
+
+    <div class="sidebar-foot">
+      <button class="btn-settings" id="openSettings"><span class="gear">⚙</span> Settings</button>
+      <div class="madeby">made by <b>Lokiz Studios</b></div>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="openSidebar" aria-label="Open menu">☰</button>
+
+      <div class="model-picker" id="modelPicker">
+        <button class="model-btn" id="modelBtn" aria-haspopup="listbox" aria-expanded="false">
+          <span class="model-dot"></span>
+          <span id="modelName">Lokizenith 3.5 Fera</span>
+          <span class="chev">▾</span>
+        </button>
+        <div class="model-menu" id="modelMenu" role="listbox"></div>
+      </div>
+
+      <div class="think-picker" id="thinkPicker">
+        <button class="think-btn" id="thinkBtn" aria-haspopup="listbox" aria-expanded="false" title="Thinking level — higher is slower but smarter">
+          <span class="think-dot"></span>
+          <span id="thinkName">High <span class="rec-badge">Recommended</span></span>
+          <span class="chev">▾</span>
+        </button>
+        <div class="think-menu" id="thinkMenu" role="listbox"></div>
+      </div>
+
+      <button class="benches-top-btn" id="benchesBtn" type="button" title="Model Benchmarks — Compare Lokizen 4.0 Stark &amp; Lokizenith 3.5 Fera vs ChatGPT ASTRA 6, Claude Opus 5.5 &amp; Gemini 4 Aragon">
+        <span class="benches-ic">📊</span>
+        <span id="benchesBtnLabel">Benches</span>
+      </button>
+
+      <div class="top-actions">
+        <button class="lokibot-nav-btn" id="lokiBotBtn" type="button" title="Open LokiBot — Autonomous AI Agents & Group Chat">
+          <span class="lb-nav-ico">
+            <svg viewBox="0 0 40 44" aria-hidden="true">
+              <path d="M12 10 C8 6 7 2 11 0 C11 4 13 7 16 9 Z" fill="#7dffcf"/>
+              <path d="M28 10 C32 6 33 2 29 0 C29 4 27 7 24 9 Z" fill="#7dffcf"/>
+              <rect x="6" y="7" width="28" height="32" rx="14" fill="currentColor"/>
+              <rect x="10" y="14" width="20" height="14" rx="7" fill="#04150d"/>
+              <ellipse cx="15.5" cy="21" rx="2.3" ry="2.8" fill="#00ff9c"/>
+              <ellipse cx="24.5" cy="21" rx="2.3" ry="2.8" fill="#00ff9c"/>
+            </svg>
+          </span>
+          <span>LokiBot</span>
+          <span class="lb-nav-pill">24/7</span>
+        </button>
+        <div class="labs-menu" id="labsMenu" hidden></div>
+      </div>
+    </header>
+
+    <!-- ===== CHAT VIEW ===== -->
+    <section class="view chat-view active" id="chatView">
+      <div class="messages" id="messages" role="log" aria-live="polite"></div>
+
+      <div class="composer-wrap">
+        <div class="slash-menu" id="slashMenu" hidden role="listbox" aria-label="Slash Commands"></div>
+        <div class="attach-tray" id="attachTray"></div>
+        <form class="composer" id="composer" autocomplete="off">
+          <div class="tools">
+            <button type="button" class="tool-btn" id="plusBtn" aria-label="Add">＋</button>
+            <div class="plus-menu" id="plusMenu">
+              <button type="button" data-act="upload">📎 <span>Upload image or file</span></button>
+              <button type="button" data-act="image-edit" class="stark">🖌️ <span>Edit photo</span><i>Stark</i></button>
+              <button type="button" data-act="image" class="stark">🎨 <span>Create image</span><i>Stark</i></button>
+              <button type="button" data-act="video" class="stark">🎬 <span>Generate AI video</span><i>Stark</i></button>
+              <button type="button" data-act="search" class="stark">🌐 <span>Search the web</span><i>Stark</i></button>
+              <button type="button" data-act="slides" class="stark">📊 <span>Make a PowerPoint</span><i>Stark</i></button>
+              <button type="button" data-act="file" class="stark">📄 <span>Create a file</span><i>Stark</i></button>
+            </div>
+            <input type="file" id="fileInput" multiple hidden accept="image/*,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.log,.pdf,.java,.c,.cpp,.cs,.go,.rs,.rb,.php,.sql">
+          </div>
+          <div class="mode-chip" id="modeChip" hidden></div>
+          <textarea id="prompt" rows="1" placeholder="Message Lokizenith… (type / for tools)" enterkeyhint="send"></textarea>
+          <button type="button" class="tool-btn mic" id="micBtn" aria-label="Voice" title="Dictate">🎙</button>
+          <button type="button" class="tool-btn call-btn" id="callBtn" aria-label="Live voice call" title="Live voice call"><svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 006.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 013 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z"/></svg></button>
+          <button type="submit" class="send" id="sendBtn" aria-label="Send" disabled>
+            <svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5L4 12z"/></svg>
+          </button>
+        </form>
+        <div class="composer-hint">Type <kbd>/</kbd> as the first character to launch any Lab tool · Lokizenith can make mistakes.</div>
+      </div>
+    </section>
+
+    <!-- ===== LOKICODE VIEW (REBUILT FROM 0 — REALTIME STARK EXTRA HIGH STUDIO) ===== -->
+    <section class="view code-view" id="codeView" aria-label="LokiCode Studio">
+      <div class="lc-hero-bar">
+        <button class="back-btn" id="lcBack" type="button">‹ Back to Chat</button>
+        <div class="lc-title-wrap">
+          <div class="lc-title-row">
+            <h1><span class="lc-glyph">&lt;/&gt;</span> LokiCode</h1>
+            <span class="lc-engine-pill">⚡ Lokizen 4.0 Stark · Extra High</span>
+          </div>
+          <span class="lc-sub">Master AI Specialist across 8 languages · 2.5s deep analysis + real-time verified coding</span>
+        </div>
+        <div class="lc-stats-badge" id="lcStats">Python · Ready</div>
+      </div>
+
+      <!-- 8 Coding Languages Selector -->
+      <div class="lc-langs-wrap">
+        <div class="lc-langs-bar-header">
+          <span class="lc-langs-title">⚡ 8 Supported Coding Languages:</span>
+          <span class="lc-langs-sub">Click any language to switch syntax, templates &amp; execution compiler</span>
+        </div>
+        <div class="lc-langs" id="lcLangs" role="tablist" aria-label="Coding Languages">
+          <button type="button" class="lang on" data-lang="python" style="--c:#3776ab" role="tab" aria-selected="true"><i></i><span class="lang-ic">🐍</span><span>Python</span></button>
+          <button type="button" class="lang" data-lang="java" style="--c:#f89820" role="tab" aria-selected="false"><i></i><span class="lang-ic">☕</span><span>Java</span></button>
+          <button type="button" class="lang" data-lang="lsl" style="--c:#00e5ff" role="tab" aria-selected="false"><i></i><span class="lang-ic">💠</span><span>LSL</span></button>
+          <button type="button" class="lang" data-lang="javascript" style="--c:#f7df1e" role="tab" aria-selected="false"><i></i><span class="lang-ic">⚡</span><span>JavaScript</span></button>
+          <button type="button" class="lang" data-lang="typescript" style="--c:#3178c6" role="tab" aria-selected="false"><i></i><span class="lang-ic">🔷</span><span>TypeScript</span></button>
+          <button type="button" class="lang" data-lang="html" style="--c:#e34f26" role="tab" aria-selected="false"><i></i><span class="lang-ic">🌐</span><span>HTML/CSS</span></button>
+          <button type="button" class="lang" data-lang="cpp" style="--c:#00599c" role="tab" aria-selected="false"><i></i><span class="lang-ic">⚙️</span><span>C++</span></button>
+          <button type="button" class="lang" data-lang="csharp" style="--c:#9b4f96" role="tab" aria-selected="false"><i></i><span class="lang-ic">🎯</span><span>C#</span></button>
+        </div>
+      </div>
+
+      <!-- Prompt Box with Mode Switcher (New Code vs Edit Existing Code) -->
+      <div class="lc-prompt-card" id="lcForm" role="region" aria-label="LokiCode Generator">
+        <div class="lc-mode-bar">
+          <div class="lc-mode-tabs" role="tablist" aria-label="Generation Mode">
+            <button type="button" class="lc-mode-tab on" id="lcModeNew" data-mode="new" role="tab" aria-selected="true">
+              <span class="mode-ic">➕</span> <b>New Code</b>
+              <small>From scratch · New history entry</small>
+            </button>
+            <button type="button" class="lc-mode-tab" id="lcModeEdit" data-mode="edit" role="tab" aria-selected="false">
+              <span class="mode-ic">✏️</span> <b>Edit Existing Code</b>
+              <small>Modify &amp; delete · Updates active code</small>
+            </button>
+          </div>
+          <div class="lc-mode-meta" id="lcModeMeta">
+            <span class="lc-mode-badge" id="lcModeBadge">✨ Fresh Generation</span>
+            <span class="lc-mode-hint" id="lcModeHint">AI will generate a new program and save as a new snippet</span>
+          </div>
+        </div>
+
+        <div class="lc-prompt-top">
+          <span class="lc-prompt-lbl" id="lcPromptLbl">Describe what you want the code to do</span>
+          <div class="lc-quick-ideas" id="lcQuickIdeas">
+            <button type="button" data-p="Make a code that prints hi">Print "hi"</button>
+            <button type="button" data-p="Write a prime number generator and checker with benchmark">Prime Checker</button>
+            <button type="button" data-p="Build a complete interactive task manager system">Task Engine</button>
+            <button type="button" data-p="LSL automatic sliding security door that opens on touch or sensor">LSL Auto-Door</button>
+          </div>
+        </div>
+        <textarea id="lcPrompt" rows="3" dir="auto" placeholder="Write your prompt here… e.g. 'make a code that prints hi', 'build a calculator class', 'LSL rainbow glow script'"></textarea>
+        <div class="lc-prompt-foot">
+          <div class="lc-prompt-meta">
+            <label class="lc-check"><input type="checkbox" id="lcComments" checked> <span>Include helpful comments</span></label>
+            <span class="lc-realtime-hint">✓ Real-time word &amp; variable check enabled</span>
+          </div>
+          <button type="button" class="lc-go" id="lcGo" aria-label="Generate code">
+            <span class="lc-go-ic">⚡</span>
+            <span id="lcGoText">Send &amp; Generate</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Space Between Prompt Box and Code Page: Real-Time Dynamic Working Indicator -->
+      <div class="lc-mid-space" id="lcMidSpace">
+        <div class="lc-work-box" id="lcWorking" hidden>
+          <div class="lc-work-bar">
+            <span class="lc-work-orb" id="lcWorkOrb"></span>
+            <span class="lc-work-status" id="lcWorkStatus">Working</span>
+            <span class="lc-work-timer" id="lcWorkTimer">0.0s</span>
+            <span class="lc-work-cur" id="lcWorkCur">Initializing Lokizen 4.0 Stark (Extra High)…</span>
+            <span class="lc-word-audit" id="lcWordAudit" hidden>✓ <code id="lcWordToken">init</code> OK</span>
+            <button type="button" class="lc-work-arrow" id="lcWorkToggle" aria-expanded="false" title="Show what LokiCode worked on, finished, and is currently working on">
+              <span class="lc-arrow-ic">▾</span>
+            </button>
+          </div>
+          <div class="lc-work-drawer" id="lcWorkDrawer" hidden>
+            <div class="lc-work-cols">
+              <div class="lc-work-col">
+                <h4><span class="dot done"></span> Finished Working On (<span id="lcFinishedCount">0</span>)</h4>
+                <ul id="lcFinishedList"></ul>
+              </div>
+              <div class="lc-work-col">
+                <h4><span class="dot active"></span> Currently Working On</h4>
+                <div class="lc-cur-box" id="lcCurrentlyBox">Idle</div>
+                <h4 style="margin-top:10px"><span class="dot info"></span> Word, Variable &amp; Scope Checks</h4>
+                <div class="lc-audit-summary" id="lcAuditSummary">0 tokens verified</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Final Verification Result Banner -->
+        <div class="lc-verify-banner" id="lcVerifyBanner" hidden></div>
+      </div>
+
+      <!-- Code Page (Stretches dynamically by the length of the code) -->
+      <div class="lc-panel" id="lcPanel">
+        <div class="lc-bar">
+          <div class="lc-bar-left">
+            <div class="dots"><i></i><i></i><i></i></div>
+            <span class="lc-file" id="lcFile">main.py</span>
+            <span class="lc-lines-tag" id="lcLineCount">1 line</span>
+            <span class="lc-verified-pill" id="lcVerifiedPill" hidden>✓ Verified OK</span>
+          </div>
+          <div class="lc-bar-actions">
+            <button type="button" id="lcTemplates" class="lc-btn-subtle" title="Starter code templates for all 8 languages">📋 Templates</button>
+            <button type="button" id="lcFormat" class="lc-btn-subtle" title="Auto-format and beautify code">✨ Format</button>
+            <button type="button" id="lcSaveCode" class="lc-btn-save" title="Save code to history with AI auto-naming">💾 Save Code</button>
+            <button type="button" id="lcHistoryBtn" class="lc-btn-history" title="View saved code history (only latest updates)">📜 History <span class="badge" id="lcHistoryBadge">0</span></button>
+            <button type="button" id="lcVerify" class="lc-btn-verify" title="Verify final code for errors, variables, and syntax">✓ Verify Final Code</button>
+            <button type="button" id="lcCopy" class="lc-btn-copy" title="Copy full code">⧉ Copy</button>
+            <button type="button" id="lcExplain" title="Explain the code">💡 Explain</button>
+            <button type="button" id="lcDownload" title="Download file">⤓ Save</button>
+            <button type="button" id="lcRun" class="run" title="Run code with interactive console &amp; stdin">▶ Run</button>
+          </div>
+        </div>
+
+        <!-- Inspector & Metrics Bar -->
+        <div class="lc-metrics-bar" id="lcMetricsBar">
+          <div class="lc-metrics-left">
+            <span class="lc-metric" id="lcMetricLang">🐍 Python</span>
+            <span class="lc-metric" id="lcMetricLines">1 line</span>
+            <span class="lc-metric" id="lcMetricTokens">0 tokens</span>
+            <span class="lc-metric" id="lcMetricFuncs">0 defs</span>
+            <span class="lc-metric" id="lcMetricBrackets">✓ Syntax balanced</span>
+          </div>
+          <div class="lc-metrics-right">
+            <span class="lc-active-item" id="lcActiveItemTitle" title="Current code title in history">📝 Unsaved Snippet</span>
+          </div>
+        </div>
+
+        <div class="lc-code" id="lcCodeWrap">
+          <pre><code id="lcCode" class="hljs">// Choose a language above, write what you want in the prompt box, and click Send &amp; Generate ⚡</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== LOKILESSONS VIEW ===== -->
+    <section class="view lessons-view" id="lessonsView" aria-label="LokiLessons"></section>
+
+    <!-- ===== LOKIBOT VIEW (FULL AUTONOMOUS MULTI-AGENT & LINUX COMPUTER PLATFORM) ===== -->
+    <section class="view lokibot-view" id="lokibotView" aria-label="LokiBot Studio"></section>
+
+    <!-- ===== BENCHES VIEW (FULL FRONTIER MODEL BENCHMARK PAGE) ===== -->
+    <section class="view benches-view" id="benchesView" aria-label="Frontier Model Benchmarks"></section>
+  </main>
+</div>
+
+<!-- ============ SETTINGS ============ -->
+<div class="modal" id="settings" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><h2>⚙ Settings</h2><button class="icon-btn" data-close>✕</button></div>
+    <div class="modal-body" id="settingsBody"></div>
+  </div>
+</div>
+
+<!-- ============ GENERIC LAB MODAL ============ -->
+<div class="modal" id="labModal" hidden>
+  <div class="modal-card wide">
+    <div class="modal-head"><h2 id="labTitle">Lab</h2><button class="icon-btn" data-close>✕</button></div>
+    <div class="modal-body" id="labBody"></div>
+  </div>
+</div>
+
+<!-- ============ LOKICODE CODE HISTORY MODAL ============ -->
+<div class="modal" id="lcHistoryModal" hidden>
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h2>📜 Code History · AI Auto-Named (Latest Updates Only)</h2>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body" id="lcHistoryBody">
+      <div class="lc-hist-topbar">
+        <span class="lc-hist-subtitle">Each code snippet is named automatically by AI based on what it does, saving only the latest update.</span>
+        <button type="button" class="lc-btn-subtle" id="lcClearAllHistory">🗑️ Clear History</button>
+      </div>
+      <div class="lc-hist-list" id="lcHistList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ LOKICODE STARTER TEMPLATES MODAL ============ -->
+<div class="modal" id="lcTemplatesModal" hidden>
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h2>📋 LokiCode Starter Templates (All 8 Languages)</h2>
+      <button class="icon-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body" id="lcTemplatesBody">
+      <p class="lc-tpl-subtitle">Select a production-grade template to load into the editor or edit with AI:</p>
+      <div class="lc-tpl-grid" id="lcTplGrid"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
+<script src="/i18n.js"></script>
+<script src="/engine.js"></script>
+<script src="/app.js"></script>
+<script src="/lokicode.js"></script>
+<script src="/lessons.js"></script>
+<script src="/call.js"></script>
+<script src="/features.js"></script>
+<script src="/changelog.js"></script>
+<script src="/tools.js"></script>
+<script src="/places.js"></script>
+<script src="/mascot.js"></script>
+<script src="/backgrounds.js"></script>
+<script src="/design.js"></script>
+<script src="/lokibot.js"></script>
+<script src="/benches.js"></script>
+<script src="/guard.js"></script>
+</body>
+</html>

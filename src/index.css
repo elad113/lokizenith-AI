@@ -1,0 +1,61 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@keyframes grokMascotFloat {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-3px) rotate(1.5deg);
+  }
+}
+
+@keyframes grokMascotThink {
+  0%, 100% {
+    transform: translateY(-1px) rotate(-6deg) scale(1.02);
+  }
+  50% {
+    transform: translateY(-4px) rotate(-3deg) scale(1.05);
+  }
+}
+
+@keyframes grokMascotCode {
+  0%, 100% {
+    transform: translateY(0px) scale(1);
+  }
+  25% {
+    transform: translateY(-2.5px) scale(1.03, 0.97);
+  }
+  75% {
+    transform: translateY(-1px) scale(0.98, 1.02);
+  }
+}
+
+@keyframes grokMascotHop {
+  0%, 100% {
+    transform: translateY(0px) scale(1);
+  }
+  40% {
+    transform: translateY(-6px) scale(1.05);
+  }
+  60% {
+    transform: translateY(-5px) scale(1.04);
+  }
+}
+
+.grok-mascot-idle {
+  animation: grokMascotFloat 3.4s ease-in-out infinite;
+}
+
+.grok-mascot-thinking {
+  animation: grokMascotThink 1.8s ease-in-out infinite;
+}
+
+.grok-mascot-coding {
+  animation: grokMascotCode 0.9s ease-in-out infinite;
+}
+
+.grok-mascot-approval,
+.grok-mascot-celebrating {
+  animation: grokMascotHop 1.1s ease-in-out infinite;
+}

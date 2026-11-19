@@ -1,0 +1,6 @@
+{
+  "name": "Lokizenith AI",
+  "description": "Lokizenith AI — chat, code, create. Made by Lokiz Studios.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

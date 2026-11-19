@@ -1,0 +1,530 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Non-PII user account profile, quota, and rate limit configuration.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Display name of the user."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "admin"],
+          "description": "User role on the Lokizen platform."
+        },
+        "quotaTokens": {
+          "type": "integer",
+          "description": "Maximum allowed tokens for this user account."
+        },
+        "usedTokens": {
+          "type": "integer",
+          "description": "Total tokens consumed by this user."
+        },
+        "rateLimitRpm": {
+          "type": "integer",
+          "description": "Maximum requests per minute allowed."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["uid", "displayName", "role", "quotaTokens", "usedTokens", "rateLimitRpm", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII document storing the user's email address.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Private user email address."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted administrator registry document.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Admin UID."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["uid", "createdAt"]
+    },
+    "ApiKeyMetadata": {
+      "title": "ApiKeyMetadata",
+      "description": "Hashed user API key metadata. Plaintext keys are never stored.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Document ID for the API key."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the user who owns this API key."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Human-readable label for the key."
+        },
+        "keyHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 hex digest of the API key."
+        },
+        "keyPrefix": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 24,
+          "description": "Non-sensitive key prefix for identification."
+        },
+        "keyLast4": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 4,
+          "description": "Last 4 characters of the key."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "revoked"],
+          "description": "Lifecycle status of the key."
+        },
+        "requestsCount": {
+          "type": "integer",
+          "description": "Total requests made using this key."
+        },
+        "usedTokens": {
+          "type": "integer",
+          "description": "Total tokens consumed by this key."
+        },
+        "quotaTokens": {
+          "type": "integer",
+          "description": "Maximum tokens allowed for this key."
+        },
+        "rateLimitRpm": {
+          "type": "integer",
+          "description": "Maximum requests per minute for this key."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last updated server timestamp."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "name",
+        "keyHash",
+        "keyPrefix",
+        "keyLast4",
+        "status",
+        "requestsCount",
+        "usedTokens",
+        "quotaTokens",
+        "rateLimitRpm",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ProviderConfig": {
+      "title": "ProviderConfig",
+      "description": "Central AI provider configuration metadata (credentials kept server-side).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Provider identifier."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Provider display name."
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 300,
+          "description": "Provider API endpoint base URL."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this provider is enabled for routing."
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Routing priority (lower number = higher priority)."
+        },
+        "models": {
+          "type": "array",
+          "description": "List of model IDs served by this provider (max 20)."
+        },
+        "credentialCount": {
+          "type": "integer",
+          "description": "Number of server-side credentials configured."
+        },
+        "healthStatus": {
+          "type": "string",
+          "enum": ["healthy", "degraded", "down", "untested"],
+          "description": "Current health status."
+        },
+        "lastLatencyMs": {
+          "type": "integer",
+          "description": "Most recent probe latency in milliseconds."
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Admin UID who configured this provider."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "baseUrl",
+        "enabled",
+        "priority",
+        "models",
+        "credentialCount",
+        "healthStatus",
+        "lastLatencyMs",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RequestLog": {
+      "title": "RequestLog",
+      "description": "Immutable API request telemetry and cost log.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique request log ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the user who made the request."
+        },
+        "keyPrefix": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 24,
+          "description": "Prefix of the key used."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Requested model ID."
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Provider ID that served the request."
+        },
+        "providerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Provider name that served the request."
+        },
+        "statusCode": {
+          "type": "integer",
+          "description": "HTTP status code returned."
+        },
+        "latencyMs": {
+          "type": "integer",
+          "description": "Total request duration in ms."
+        },
+        "promptTokens": {
+          "type": "integer",
+          "description": "Input token count."
+        },
+        "completionTokens": {
+          "type": "integer",
+          "description": "Output token count."
+        },
+        "totalTokens": {
+          "type": "integer",
+          "description": "Total tokens consumed."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Estimated cost in USD."
+        },
+        "fallbackUsed": {
+          "type": "boolean",
+          "description": "Whether automatic provider fallback was triggered."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "keyPrefix",
+        "model",
+        "providerId",
+        "providerName",
+        "statusCode",
+        "latencyMs",
+        "promptTokens",
+        "completionTokens",
+        "totalTokens",
+        "costUsd",
+        "fallbackUsed",
+        "createdAt"
+      ]
+    },
+    "AccountVault": {
+      "title": "AccountVault",
+      "description": "Per-user perpetual cloud backup summary and settings synced across app updates.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["free", "pro", "ultimate"]
+        },
+        "convsCount": {
+          "type": "integer"
+        },
+        "schemaVersion": {
+          "type": "integer"
+        },
+        "settings": {
+          "type": "object",
+          "description": "Native user settings map."
+        },
+        "recentTitles": {
+          "type": "array",
+          "description": "Bounded recent conversation titles (max 25)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "username", "plan", "convsCount", "schemaVersion", "settings", "recentTitles", "createdAt", "updatedAt"]
+    },
+    "PlatformVaultAccount": {
+      "title": "PlatformVaultAccount",
+      "description": "Admin-only perpetual cloud backup record for registered accounts across updates.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["free", "pro", "ultimate"]
+        },
+        "planSource": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "tokensRemaining": {
+          "type": "integer"
+        },
+        "bonusTokens": {
+          "type": "integer"
+        },
+        "totalTokensUsed": {
+          "type": "integer"
+        },
+        "convsCount": {
+          "type": "integer"
+        },
+        "starkAuthorized": {
+          "type": "boolean"
+        },
+        "authProvider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "schemaVersion": {
+          "type": "integer"
+        },
+        "accountData": {
+          "type": "object",
+          "description": "Native map holding portable account fields."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "displayName",
+        "plan",
+        "planSource",
+        "tokensRemaining",
+        "bonusTokens",
+        "totalTokensUsed",
+        "convsCount",
+        "starkAuthorized",
+        "authProvider",
+        "schemaVersion",
+        "accountData",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile, quota, and rate limits."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated PII storage for user email."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Administrator role lookup registry."
+    },
+    "/apiKeys/{keyId}": {
+      "schema": { "$ref": "#/entities/ApiKeyMetadata" },
+      "description": "Hashed user API key metadata."
+    },
+    "/providers/{providerId}": {
+      "schema": { "$ref": "#/entities/ProviderConfig" },
+      "description": "Admin-managed central AI provider configurations."
+    },
+    "/requestLogs/{logId}": {
+      "schema": { "$ref": "#/entities/RequestLog" },
+      "description": "API request history, usage telemetry, and cost logs."
+    },
+    "/accountVaults/{userId}": {
+      "schema": { "$ref": "#/entities/AccountVault" },
+      "description": "Per-user perpetual cloud vault summary and preferences."
+    },
+    "/platformVaultAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/PlatformVaultAccount" },
+      "description": "Admin-only perpetual cloud vault for registered accounts."
+    }
+  }
+}

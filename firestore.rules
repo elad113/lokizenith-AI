@@ -1,0 +1,436 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Phase 3: Hardened Global Primitives
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'benczelelad@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // =========================================================================
+    // Validation Blueprints (Anti-Update-Gap)
+    // =========================================================================
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'quotaTokens', 'usedTokens', 'rateLimitRpm', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'quotaTokens', 'usedTokens', 'rateLimitRpm', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.role is string && (data.role == 'user' || data.role == 'admin') &&
+        data.quotaTokens is int && data.quotaTokens >= 0 && data.quotaTokens <= 1000000000 &&
+        data.usedTokens is int && data.usedTokens >= 0 && data.usedTokens <= 1000000000 &&
+        data.rateLimitRpm is int && data.rateLimitRpm >= 1 && data.rateLimitRpm <= 100000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidApiKeyMetadata(data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'name', 'keyHash', 'keyPrefix', 'keyLast4',
+          'status', 'requestsCount', 'usedTokens', 'quotaTokens', 'rateLimitRpm',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'name', 'keyHash', 'keyPrefix', 'keyLast4',
+          'status', 'requestsCount', 'usedTokens', 'quotaTokens', 'rateLimitRpm',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.keyHash is string && data.keyHash.size() == 64 && data.keyHash.matches('^[a-f0-9]{64}$') &&
+        data.keyPrefix is string && data.keyPrefix.size() >= 8 && data.keyPrefix.size() <= 24 &&
+        data.keyLast4 is string && data.keyLast4.size() == 4 &&
+        data.status is string && (data.status == 'active' || data.status == 'revoked') &&
+        data.requestsCount is int && data.requestsCount >= 0 && data.requestsCount <= 1000000000 &&
+        data.usedTokens is int && data.usedTokens >= 0 && data.usedTokens <= 1000000000 &&
+        data.quotaTokens is int && data.quotaTokens >= 0 && data.quotaTokens <= 1000000000 &&
+        data.rateLimitRpm is int && data.rateLimitRpm >= 1 && data.rateLimitRpm <= 100000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidProviderConfig(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'baseUrl', 'enabled', 'priority', 'models',
+          'credentialCount', 'healthStatus', 'lastLatencyMs', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'baseUrl', 'enabled', 'priority', 'models',
+          'credentialCount', 'healthStatus', 'lastLatencyMs', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.baseUrl is string && data.baseUrl.size() >= 8 && data.baseUrl.size() <= 300 &&
+        data.enabled is bool &&
+        data.priority is int && data.priority >= 1 && data.priority <= 1000 &&
+        data.models is list && data.models.size() >= 1 && data.models.size() <= 20 &&
+        data.models[0] is string && data.models[0].size() >= 1 && data.models[0].size() <= 100 &&
+        data.credentialCount is int && data.credentialCount >= 0 && data.credentialCount <= 100 &&
+        data.healthStatus is string && (data.healthStatus == 'healthy' || data.healthStatus == 'degraded' || data.healthStatus == 'down' || data.healthStatus == 'untested') &&
+        data.lastLatencyMs is int && data.lastLatencyMs >= 0 && data.lastLatencyMs <= 600000 &&
+        data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 && data.createdBy.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRequestLog(data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'keyPrefix', 'model', 'providerId', 'providerName',
+          'statusCode', 'latencyMs', 'promptTokens', 'completionTokens', 'totalTokens',
+          'costUsd', 'fallbackUsed', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'keyPrefix', 'model', 'providerId', 'providerName',
+          'statusCode', 'latencyMs', 'promptTokens', 'completionTokens', 'totalTokens',
+          'costUsd', 'fallbackUsed', 'createdAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.keyPrefix is string && data.keyPrefix.size() >= 4 && data.keyPrefix.size() <= 24 &&
+        data.model is string && data.model.size() >= 1 && data.model.size() <= 100 &&
+        data.providerId is string && data.providerId.size() >= 1 && data.providerId.size() <= 128 &&
+        data.providerName is string && data.providerName.size() >= 1 && data.providerName.size() <= 100 &&
+        data.statusCode is int && data.statusCode >= 100 && data.statusCode <= 599 &&
+        data.latencyMs is int && data.latencyMs >= 0 && data.latencyMs <= 600000 &&
+        data.promptTokens is int && data.promptTokens >= 0 && data.promptTokens <= 10000000 &&
+        data.completionTokens is int && data.completionTokens >= 0 && data.completionTokens <= 10000000 &&
+        data.totalTokens is int && data.totalTokens >= 0 && data.totalTokens <= 20000000 &&
+        data.costUsd is number && data.costUsd >= 0 && data.costUsd <= 100000 &&
+        data.fallbackUsed is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAccountVault(data) {
+      return data.keys().hasAll([
+          'uid', 'username', 'plan', 'convsCount', 'schemaVersion',
+          'settings', 'recentTitles', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'username', 'plan', 'convsCount', 'schemaVersion',
+          'settings', 'recentTitles', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 64 &&
+        data.plan is string && (data.plan == 'free' || data.plan == 'pro' || data.plan == 'ultimate') &&
+        data.convsCount is int && data.convsCount >= 0 && data.convsCount <= 10000 &&
+        data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 1000 &&
+        data.settings is map &&
+        data.recentTitles is list && data.recentTitles.size() <= 25 &&
+        (data.recentTitles.size() == 0 || data.recentTitles[0] is string) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPlatformVaultAccount(data) {
+      return data.keys().hasAll([
+          'id', 'username', 'displayName', 'plan', 'planSource',
+          'tokensRemaining', 'bonusTokens', 'totalTokensUsed', 'convsCount',
+          'starkAuthorized', 'authProvider', 'schemaVersion', 'accountData',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'username', 'displayName', 'plan', 'planSource',
+          'tokensRemaining', 'bonusTokens', 'totalTokensUsed', 'convsCount',
+          'starkAuthorized', 'authProvider', 'schemaVersion', 'accountData',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 64 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.plan is string && (data.plan == 'free' || data.plan == 'pro' || data.plan == 'ultimate') &&
+        data.planSource is string && data.planSource.size() >= 1 && data.planSource.size() <= 32 &&
+        data.tokensRemaining is int && data.tokensRemaining >= 0 && data.tokensRemaining <= 1000000000 &&
+        data.bonusTokens is int && data.bonusTokens >= 0 && data.bonusTokens <= 1000000000 &&
+        data.totalTokensUsed is int && data.totalTokensUsed >= 0 && data.totalTokensUsed <= 1000000000 &&
+        data.convsCount is int && data.convsCount >= 0 && data.convsCount <= 100000 &&
+        data.starkAuthorized is bool &&
+        data.authProvider is string && data.authProvider.size() >= 1 && data.authProvider.size() <= 32 &&
+        data.schemaVersion is int && data.schemaVersion >= 1 && data.schemaVersion <= 1000 &&
+        data.accountData is map &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection 1: /users/{userId}
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.uid == request.auth.uid || isAdmin());
+
+      allow create: if isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == userId &&
+        incoming().uid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().role == 'user' || isAdmin());
+
+      allow update: if isValidId(userId) &&
+        isVerifiedUser() &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Owner updates displayName or usage counters
+          (isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().quotaTokens == existing().quotaTokens &&
+            incoming().rateLimitRpm == existing().rateLimitRpm &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'usedTokens', 'updatedAt'])) ||
+          // Action 2: Admin updates quota, rateLimitRpm, or role
+          isAdmin()
+        );
+
+      allow delete: if isValidId(userId) && isAdmin();
+
+      // Subcollection: /users/{userId}/private/{docId} (PII Isolation)
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) &&
+          (isOwner(userId) || isAdmin()) &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow list: if false;
+
+        allow create: if isValidId(userId) && isValidId(docId) &&
+          isOwner(userId) &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().uid == userId &&
+          incoming().uid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if false;
+        allow delete: if isValidId(userId) && isValidId(docId) && isAdmin();
+      }
+    }
+
+    // =========================================================================
+    // Collection 2: /admins/{adminId}
+    // =========================================================================
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if false;
+      allow create: if isValidId(adminId) &&
+        isAdmin() &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == adminId &&
+        incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(adminId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 3: /apiKeys/{keyId} (Hashed User API Keys Only)
+    // =========================================================================
+    match /apiKeys/{keyId} {
+      allow get: if isValidId(keyId) && isVerifiedUser() &&
+        (existing().ownerId == request.auth.uid || isAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.ownerId == request.auth.uid || isAdmin());
+
+      allow create: if isValidId(keyId) &&
+        isVerifiedUser() &&
+        isValidApiKeyMetadata(incoming()) &&
+        incoming().id == keyId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().status == 'active' &&
+        incoming().requestsCount == 0 &&
+        incoming().usedTokens == 0 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if isValidId(keyId) &&
+        isVerifiedUser() &&
+        isValidApiKeyMetadata(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().keyHash == existing().keyHash &&
+        incoming().keyPrefix == existing().keyPrefix &&
+        incoming().keyLast4 == existing().keyLast4 &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Terminal State Lock: once 'revoked', non-admins cannot update
+          (existing().status != 'revoked' &&
+            existing().ownerId == request.auth.uid &&
+            incoming().quotaTokens == existing().quotaTokens &&
+            incoming().rateLimitRpm == existing().rateLimitRpm && (
+              // Action 1: Owner revokes or renames key
+              incoming().diff(existing()).affectedKeys().hasOnly(['name', 'status', 'updatedAt']) ||
+              // Action 2: Owner records usage increment
+              incoming().diff(existing()).affectedKeys().hasOnly(['requestsCount', 'usedTokens', 'updatedAt'])
+            )) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(keyId) && isVerifiedUser() &&
+        (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    // =========================================================================
+    // Collection 4: /providers/{providerId} (Central Provider Config)
+    // =========================================================================
+    match /providers/{providerId} {
+      allow get: if isValidId(providerId) && isAdmin();
+      allow list: if isAdmin() && resource.data.priority >= 1;
+
+      allow create: if isValidId(providerId) &&
+        isAdmin() &&
+        isValidProviderConfig(incoming()) &&
+        incoming().id == providerId &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(providerId) &&
+        isAdmin() &&
+        isValidProviderConfig(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'baseUrl', 'enabled', 'priority', 'models',
+          'credentialCount', 'healthStatus', 'lastLatencyMs', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(providerId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 5: /requestLogs/{logId} (Immutable Request History & Cost Logs)
+    // =========================================================================
+    match /requestLogs/{logId} {
+      allow get: if isValidId(logId) && isVerifiedUser() &&
+        (existing().ownerId == request.auth.uid || isAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.ownerId == request.auth.uid || isAdmin());
+
+      allow create: if isValidId(logId) &&
+        isVerifiedUser() &&
+        isValidRequestLog(incoming()) &&
+        incoming().id == logId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if false;
+      allow delete: if isValidId(logId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 6: /accountVaults/{userId} (Per-User Cloud Backup Vault)
+    // =========================================================================
+    match /accountVaults/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.uid == request.auth.uid || isAdmin());
+
+      allow create: if isValidId(userId) &&
+        isOwner(userId) &&
+        isValidAccountVault(incoming()) &&
+        incoming().uid == userId &&
+        incoming().uid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId) &&
+        isVerifiedUser() &&
+        isValidAccountVault(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isOwner(userId) &&
+            incoming().plan == existing().plan &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'convsCount', 'schemaVersion', 'settings', 'recentTitles', 'updatedAt'])) ||
+          isAdmin()
+        );
+
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 7: /platformVaultAccounts/{accountId} (Admin Perpetual Registry)
+    // =========================================================================
+    match /platformVaultAccounts/{accountId} {
+      allow get: if isValidId(accountId) && isAdmin();
+      allow list: if isAdmin() && resource.data.schemaVersion >= 1;
+
+      allow create: if isValidId(accountId) &&
+        isAdmin() &&
+        isValidPlatformVaultAccount(incoming()) &&
+        incoming().id == accountId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(accountId) &&
+        isAdmin() &&
+        isValidPlatformVaultAccount(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'username', 'displayName', 'plan', 'planSource',
+          'tokensRemaining', 'bonusTokens', 'totalTokensUsed', 'convsCount',
+          'starkAuthorized', 'authProvider', 'schemaVersion', 'accountData', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(accountId) && isAdmin();
+    }
+  }
+}

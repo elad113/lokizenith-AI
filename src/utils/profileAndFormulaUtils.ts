@@ -265,7 +265,7 @@ export function formatFormulaNumber(res: number): string {
 
 /**
  * Extracts @mentions from a Team Chat message:
- * - Detects @AI / @lokizenith
+ * - Detects @AI / @lokizenith / @Loki
  * - Detects @username or @DisplayName for room members
  */
 export function extractTeamChatMentions(
@@ -273,7 +273,7 @@ export function extractTeamChatMentions(
   members: Array<{ username: string; displayName?: string }>
 ): { askAi: boolean; mentionedUsernames: string[] } {
   const text = String(content || '');
-  const askAi = /(?:^|\s)(@ai|@lokizenith|\/ai)\b/i.test(text);
+  const askAi = /(?:^|\s)(@ai|@lokizenith|@loki|\/ai)\b/i.test(text);
   const mentioned = new Set<string>();
 
   for (const m of members || []) {

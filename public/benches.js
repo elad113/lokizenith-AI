@@ -313,9 +313,21 @@
   let _renderSeq = 0;
   let _mountPayPalTimer = null;
 
+  const PAYPAL_SDK_URL = 'https://www.paypal.com/sdk/js?client-id=BAAX2U_UunOALXjCFc5_ByUQ-Z41HINtiJNFrJYiIZImn34v7OtTrwFlPGw7Zrb1oJ4uy5n5KX0Qq73UxU&vault=true&intent=subscription';
+  function ensurePayPalSdk(){
+    if (window.paypal && typeof window.paypal.Buttons === 'function') return Promise.resolve();
+    if (!window.LZ || !LZ.loadScript) return Promise.resolve();
+    return LZ.loadScript(PAYPAL_SDK_URL);
+  }
   function mountPayPalButtons(purchaseOpts, renderSeq) {
     if (renderSeq !== _renderSeq) return;
-    if (!window.paypal || typeof window.paypal.Buttons !== 'function') return;
+    if (!window.paypal || typeof window.paypal.Buttons !== 'function'){
+      ensurePayPalSdk().then(() => {
+        if (renderSeq !== _renderSeq) return;
+        if (window.paypal && typeof window.paypal.Buttons === 'function') mountPayPalButtons(purchaseOpts, renderSeq);
+      }).catch(() => {});
+      return;
+    }
     const acc = getAuthAccount();
 
     // 1. Mount Pro PayPal Button if obtainable

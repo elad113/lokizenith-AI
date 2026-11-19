@@ -1,4 +1,10 @@
 import { buildMatlabSystemPrompt } from './matlabSpecialist.ts';
+import {
+  formatLslDiagnostics,
+  lintLslScript,
+  stableLslPrefix,
+  estimateMonoBytes,
+} from './lslChecker.ts';
 
 export interface LslAuditStats {
   lines: number;
@@ -73,15 +79,20 @@ export function buildLslSystemPrompt(opts: { mode?: 'new' | 'edit'; comments?: b
 
   if (isEdit) {
     return `Principal Second Life LSL2/Mono Scripter editing an existing LSL script.
-Order: globals -> helpers (NO "void") -> default {} -> states. Valid types: integer, float, string, key, vector, rotation, list. Use llSetLinkPrimitiveParamsFast, llRegionSayTo, llListenRemove.${visionRule}
+Order: globals -> helpers (NO "void") -> default {} -> states. Valid types: integer, float, string, key, vector, rotation, list. vector is <x,y,z>, rotation is <x,y,z,s>, list is [ ].
+Every statement ends with ;. Declare every variable. No switch, ternary ?:, ===, class, const, var, let, break, continue. No global function-call initialisers. No state changes inside user functions. Events cannot return a value. Mono limit 64KB.
+Use exact ll* arity: llSay(integer,string), llListen(integer,string,key,string), llListenRemove(integer), llSetTimerEvent(float), llRegionSayTo(key,integer,string), llSetLinkPrimitiveParamsFast(integer,list).${visionRule}
 ${wantComments ? 'Brief comments on changes.' : 'Minimal comments.'}
 Start line 1 with \`\`\`lsl and output ONLY the updated code block.`;
   }
 
-  return `Principal Second Life LSL2/Mono Scripter. Write compact, 100% compilable LSL fast (45-110 lines, zero bloat/TODOs).
-Order: typed globals -> concise helpers (NO "void" keyword) -> default { ... }.
-Types: integer, float, string, key, vector, rotation, list. Constants: TRUE, FALSE, NULL_KEY, ZERO_VECTOR, ZERO_ROTATION.
-Best practices: llListenRemove before llListen, CHANGED_OWNER/on_rez reset, llSetLinkPrimitiveParamsFast, llRegionSayTo.${visionRule}
+  return `Principal Second Life LSL2/Mono Scripter. Write complete, compile-clean LSL immediately (as long as the request needs — do not truncate features).
+Order: typed globals -> concise helpers (NO "void" keyword) -> default { events } -> named states.
+Types: integer, float, string, key, vector, rotation, list. key accepts a string UUID. vector is <x,y,z> (3 components). rotation is <x,y,z,s> (4). list is [a, b]. Constants: TRUE, FALSE, NULL_KEY, ZERO_VECTOR, ZERO_ROTATION.
+Events: state_entry(), touch_start(integer n), listen(integer channel, string name, key id, string message), timer(), sensor(integer n), changed(integer change), on_rez(integer start), attach(key id), money(key id, integer amount), dataserver(key query, string data), http_response(key id, integer status, list meta, string body), link_message(integer sender, integer num, string str, key id).
+Rules: semicolon after every statement; declare every variable before use; no undeclared names; no switch, ternary ?:, ===, class, const, var, let, break, continue, or function keyword; user functions sit above all states; no state changes inside user functions; no value returned from events; globals initialise with constants only (no ll* calls). Mono memory limit is 64KB.
+ll* signatures: llSay(integer,string), llOwnerSay(string), llListen(integer,string,key,string), llListenRemove(integer), llSetTimerEvent(float) and later llSetTimerEvent(0.0), llRegionSayTo(key,integer,string), llDialog(key,string,list,integer), llSetLinkPrimitiveParamsFast(integer,list), llHTTPRequest(string,list,string) paired with http_response.
+Best practices: llListenRemove before llListen, avoid channel 0, CHANGED_OWNER/on_rez reset, llSetLinkPrimitiveParamsFast, llRegionSayTo.${visionRule}
 ${wantComments ? 'Short 1-line block comments.' : 'Minimal comments.'}
 Start line 1 IMMEDIATELY with \`\`\`lsl and end with \`\`\`. No text outside the fence.`;
 }
@@ -393,7 +404,14 @@ export function analyzeAndFixLslScript(rawCode: string): LslAuditResult {
   }
 
   const lines = fixed.trim() ? fixed.trim().split('\n').length : 0;
-  const estimatedMonoBytes = Math.min(65536, 4096 + fixed.length * 6);
+  const estimatedMonoBytes = Math.min(65536, estimateMonoBytes(fixed));
+  const lint = lintLslScript(fixed);
+  for (const msg of formatLslDiagnostics(lint.errors)) {
+    if (!errors.includes(msg)) errors.push(msg);
+  }
+  for (const msg of formatLslDiagnostics(lint.warnings)) {
+    if (!warnings.includes(msg)) warnings.push(msg);
+  }
 
   return {
     code: fixed,
@@ -412,6 +430,34 @@ export function analyzeAndFixLslScript(rawCode: string): LslAuditResult {
       hasListen,
       hasListenRemove,
       hasOwnerChangeReset,
+    },
+  };
+}
+
+/** Live check of a still-streaming script: only completed statements, no auto-wrap. */
+export function checkLslIncremental(rawCode: string): LslAuditResult {
+  const prefix = stableLslPrefix(String(rawCode || ''));
+  const lint = lintLslScript(prefix, { streaming: true });
+  const errors = formatLslDiagnostics(lint.errors);
+  const warnings = formatLslDiagnostics(lint.warnings);
+  const lines = prefix.trim() ? prefix.trim().split('\n').length : 0;
+  return {
+    code: prefix,
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    fixes: [],
+    stats: {
+      lines,
+      states: (prefix.match(/\b(?:default|state)\b/g) || []).length,
+      events: 0,
+      functions: 0,
+      llCalls: (prefix.match(/\bll[A-Z]/g) || []).length,
+      globals: 0,
+      estimatedMonoBytes: Math.min(65536, estimateMonoBytes(prefix)),
+      hasListen: /\bllListen\s*\(/.test(prefix),
+      hasListenRemove: /\bllListenRemove\s*\(/.test(prefix),
+      hasOwnerChangeReset: /\bCHANGED_OWNER\b|\bon_rez\b/.test(prefix),
     },
   };
 }
@@ -714,7 +760,9 @@ initOrb()
     llListenRemove(g_listenHandle);
     g_listenHandle = llListen(g_channel, "", g_owner, "");
     llSensorRepeat("", NULL_KEY, AGENT, g_range, PI, 3.0);
-    llSetText("🛡️ Security Orb: " + (g_armed ? "ARMED" : "STANDBY") + "\\nRange: " + (string)((integer)g_range) + "m", <0.1, 1.0, 0.55>, 1.0);
+    string modeLabel = "STANDBY";
+    if (g_armed) modeLabel = "ARMED";
+    llSetText("🛡️ Security Orb: " + modeLabel + "\\nRange: " + (string)((integer)g_range) + "m", <0.1, 1.0, 0.55>, 1.0);
 }
 
 default
@@ -733,7 +781,8 @@ default
             llRegionSayTo(toucher, 0, "Restricted parcel security device.");
             return;
         }
-        string status = g_armed ? "ARMED" : "STANDBY";
+        string status = "STANDBY";
+        if (g_armed) status = "ARMED";
         llDialog(g_owner, "Security Orb (" + status + ") · Range " + (string)((integer)g_range) + "m", ["Arm", "Standby", "Range 20m", "Range 40m", "Status", "Reset"], g_channel);
     }
 
@@ -1269,7 +1318,9 @@ applyLight()
         PRIM_FULLBRIGHT, ALL_SIDES, g_on,
         PRIM_GLOW, ALL_SIDES, g_on * 0.18
     ]);
-    llSetText("💡 Smart Lamp: " + (g_on ? "ON" : "OFF"), g_color, 0.9);
+    string lampLabel = "OFF";
+    if (g_on) lampLabel = "ON";
+    llSetText("💡 Smart Lamp: " + lampLabel, g_color, 0.9);
 }
 
 default
@@ -1284,7 +1335,9 @@ default
     {
         g_on = !g_on;
         applyLight();
-        llRegionSayTo(llDetectedKey(0), 0, "Light switched " + (g_on ? "ON" : "OFF") + ".");
+        string switched = "OFF";
+        if (g_on) switched = "ON";
+        llRegionSayTo(llDetectedKey(0), 0, "Light switched " + switched + ".");
     }
 
     on_rez(integer start_param) { llResetScript(); }

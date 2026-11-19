@@ -4211,7 +4211,7 @@ function renderSettings(){
         ${row('Reset settings', 'Back to defaults, keeps chats', '<button class="btn-ghost" id="setReset">↺ Reset</button>')}
         ${row('Clear all data', 'Deletes all chats & settings on this device', '<button class="danger-btn" id="setClear">Clear everything</button>')}
         <h3 style="margin-top:14px">Keyboard shortcuts</h3><div class="shortcuts">
-        <span>New chat</span><kbd>Ctrl K</kbd><span>Focus message box</span><kbd>Ctrl /</kbd><span>Settings</span><kbd>Ctrl ,</kbd><span>LokiCode</span><kbd>Ctrl Shift L</kbd><span>Toggle sidebar</span><kbd>Ctrl B</kbd><span>Switch model</span><kbd>Alt M</kbd><span>Cycle thinking level</span><kbd>Alt T</kbd><span>Close dialogs</span><kbd>Esc</kbd></div>
+        <span>Command palette</span><kbd>Ctrl K</kbd><span>Focus message box</span><kbd>Ctrl /</kbd><span>Settings</span><kbd>Ctrl ,</kbd><span>LokiCode</span><kbd>Ctrl Shift L</kbd><span>Toggle sidebar</span><kbd>Ctrl B</kbd><span>Switch model</span><kbd>Alt M</kbd><span>Cycle thinking level</span><kbd>Alt T</kbd><span>Close dialogs</span><kbd>Esc</kbd></div>
       </div>
       ${EXTRA_SECS.map((x, i) => `<div class="set-sec set-page ${activeSettingsTab === (7 + i) ? 'active-page' : ''}" data-sec="${7 + i}" data-xsec="${x.id}" ${activeSettingsTab === (7 + i) ? '' : 'hidden'}></div>`).join('')}
       <div class="madeby" style="padding-top:10px">Lokizenith AI · made by <b>Lokiz Studios</b></div>
@@ -4411,8 +4411,11 @@ function bind(){
   $$('.modal').forEach(m => { m.addEventListener('click', e => { if (m.id === 'bannedUserModal') return; if (e.target === m || e.target.closest('[data-close]')) closeModal(m.id); }); });
   document.addEventListener('keydown', e => {
     const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
-    if (e.key === 'Escape'){ $$('.modal:not([hidden])').forEach(m => { if (m.id !== 'bannedUserModal') closeModal(m.id); }); toggleMenu(null); $('.lightbox') && $('.lightbox').remove(); closeSidebarMobile(); }
-    else if (mod && k === 'k'){ e.preventDefault(); startNewChat(); }
+    if (e.key === 'Escape'){
+      if (window.LZPalette && window.LZPalette.isOpen && window.LZPalette.isOpen()) { window.LZPalette.close(); return; }
+      $$('.modal:not([hidden])').forEach(m => { if (m.id !== 'bannedUserModal') closeModal(m.id); }); toggleMenu(null); $('.lightbox') && $('.lightbox').remove(); closeSidebarMobile();
+    }
+    else if (mod && k === 'k'){ e.preventDefault(); if (window.LZPalette && window.LZPalette.toggle) window.LZPalette.toggle(); else startNewChat(); }
     else if (mod && k === '/'){ e.preventDefault(); showView('chat'); $('#prompt').focus(); }
     else if (mod && k === ','){ e.preventDefault(); $('#openSettings').click(); }
     else if (mod && e.shiftKey && k === 'l'){ e.preventDefault(); showView(state.view === 'code' ? 'chat' : 'code'); }

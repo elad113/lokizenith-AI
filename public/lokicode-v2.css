@@ -1,0 +1,432 @@
+/* LokiCode studio — layout, motion, diagnostics, snippets, palette.
+   Scoped so the rest of the app keeps its current chrome. */
+
+#codeView.lc-v2 {
+  padding: 18px clamp(12px, 2.4vw, 28px) 48px !important;
+  gap: 14px !important;
+  background:
+    radial-gradient(900px 420px at 8% -10%, rgba(0, 255, 156, 0.08), transparent 60%),
+    radial-gradient(700px 380px at 100% 0%, rgba(56, 189, 248, 0.06), transparent 55%);
+}
+
+#codeView.lc-v2 .lc-hero-bar {
+  position: relative;
+  overflow: hidden;
+  border-radius: 22px;
+  padding: 18px 20px;
+  background:
+    linear-gradient(180deg, rgba(8, 22, 16, 0.92), rgba(4, 12, 9, 0.88));
+  border: 1px solid rgba(0, 255, 156, 0.28);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  animation: lc-rise 0.45s ease both;
+}
+#codeView.lc-v2 .lc-hero-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 30%, rgba(0, 255, 156, 0.08), transparent 70%);
+  transform: translateX(-60%);
+  animation: lc-sheen 4.8s ease-in-out infinite;
+  pointer-events: none;
+}
+#codeView.lc-v2 .lc-title-row h1 {
+  font-size: clamp(1.35rem, 2vw, 1.7rem);
+  letter-spacing: -0.03em;
+}
+#codeView.lc-v2 .lc-engine-pill {
+  background: rgba(0, 255, 156, 0.12);
+  color: #b8ffdf;
+  border: 1px solid rgba(0, 255, 156, 0.35);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+#codeView.lc-v2 .lc-sub { color: #9fb5aa; max-width: 62ch; }
+#codeView.lc-v2 .lc-stats-badge {
+  font-family: var(--mono);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 255, 156, 0.25);
+  border-radius: 999px;
+  padding: 8px 12px;
+}
+
+.lc-provider-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  color: #fde68a;
+  font-size: 0.86rem;
+  animation: lc-rise 0.35s ease both;
+}
+.lc-provider-notice button {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.lc-provider-notice.is-fast {
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(125, 211, 252, 0.45);
+  color: #e0f2fe;
+}
+
+.lc-snippet-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-bottom: 4px;
+}
+.lc-snippet-card {
+  flex: 1 1 180px;
+  text-align: left;
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(6, 18, 13, 0.8);
+  border: 1px solid rgba(0, 255, 156, 0.18);
+  color: inherit;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.lc-snippet-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(0, 255, 156, 0.55);
+  box-shadow: 0 10px 28px rgba(0, 255, 156, 0.12);
+}
+.lc-snippet-card b { display: block; margin-bottom: 4px; }
+.lc-snippet-card small { color: #9fb5aa; line-height: 1.35; }
+
+#codeView.lc-v2 .lc-prompt-card {
+  border-radius: 22px !important;
+  animation: lc-rise 0.5s ease 0.05s both;
+}
+#codeView.lc-v2 #lcPrompt {
+  min-height: 92px;
+  border-radius: 16px;
+  line-height: 1.45;
+}
+
+#codeView.lc-v2 .lc-work-box {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 255, 156, 0.28);
+  background: rgba(4, 14, 10, 0.9);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+#codeView.lc-v2 .lc-work-box.is-live {
+  border-color: rgba(0, 255, 156, 0.6);
+  box-shadow: 0 0 0 1px rgba(0, 255, 156, 0.15), 0 16px 40px rgba(0, 255, 156, 0.08);
+}
+#codeView.lc-v2 .lc-work-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+#codeView.lc-v2 .lc-work-orb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #00ff9c;
+  box-shadow: 0 0 0 0 rgba(0, 255, 156, 0.6);
+}
+#codeView.lc-v2 .lc-work-box.is-live .lc-work-orb {
+  animation: lc-orb 1.4s ease-out infinite;
+}
+#codeView.lc-v2 .lc-work-status { font-weight: 800; letter-spacing: 0.02em; }
+#codeView.lc-v2 .lc-work-timer,
+#codeView.lc-v2 .lc-live-lines,
+#codeView.lc-v2 .lc-provider-chip {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #d1fae5;
+}
+#codeView.lc-v2 .lc-work-cur {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #d6e7de;
+}
+#codeView.lc-v2 .lc-code.typing pre code::after,
+#codeView.lc-v2 #lcCodeWrap.typing pre code::after {
+  content: "▍";
+  color: #00ff9c;
+  animation: lc-caret 0.9s steps(1) infinite;
+  margin-left: 2px;
+}
+
+#codeView.lc-v2 #lcPanel {
+  border-radius: 22px;
+  border: 1px solid rgba(0, 255, 156, 0.16);
+  background: rgba(3, 10, 8, 0.72);
+  overflow: hidden;
+  animation: lc-rise 0.55s ease 0.08s both;
+}
+#codeView.lc-v2 .lc-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+#codeView.lc-v2 .lc-bar-left { flex: 0 0 auto; }
+#codeView.lc-v2 .lc-bar-actions {
+  flex: 1 1 560px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-start;
+}
+#codeView.lc-v2 .lc-editor-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
+  min-height: 420px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+#codeView.lc-v2 #lcCodeWrap {
+  min-height: 420px;
+  max-height: min(70vh, 820px);
+  overflow: auto;
+  background:
+    linear-gradient(90deg, rgba(0, 255, 156, 0.04) 0 46px, transparent 46px),
+    rgba(0, 0, 0, 0.25);
+}
+#codeView.lc-v2 #lcCode {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.55;
+  padding: 14px 16px 24px 12px;
+}
+#codeView.lc-v2 #lcCode .ln {
+  display: inline;
+}
+#codeView.lc-v2 #lcCode .ln.lc-line-bad {
+  background: rgba(248, 113, 113, 0.16);
+  box-shadow: inset 3px 0 0 #f87171;
+  border-radius: 4px;
+}
+#codeView.lc-v2 #lcCode .ln.lc-line-warn {
+  background: rgba(251, 191, 36, 0.12);
+  box-shadow: inset 3px 0 0 #fbbf24;
+}
+
+.lc-error-panel {
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(8, 14, 12, 0.92);
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.lc-error-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.86rem;
+}
+.lc-error-panel header span {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: #86efac;
+}
+.lc-error-panel header span.has-err { color: #fca5a5; }
+#lcErrList {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lc-err-item, .lc-warn-item, .lc-err-empty {
+  border-radius: 12px;
+  padding: 10px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+.lc-err-item { background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.28); }
+.lc-warn-item { background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.25); }
+.lc-err-empty { color: #9fb5aa; background: transparent; border: 1px dashed rgba(255, 255, 255, 0.08); }
+.lc-err-item button, .lc-version-actions button, .lc-snippet-card {
+  font: inherit;
+}
+.lc-fix-btn {
+  margin-top: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 255, 156, 0.4);
+  background: rgba(0, 255, 156, 0.12);
+  color: #bbf7d0;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.lc-fix-btn:hover { background: rgba(0, 255, 156, 0.22); }
+
+.lc-explain-dock {
+  margin: 0 12px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  background: rgba(8, 18, 28, 0.9);
+  padding: 12px 14px 16px;
+  animation: lc-rise 0.3s ease both;
+}
+.lc-explain-dock header { display: flex; justify-content: space-between; align-items: center; }
+.lc-explain-dock header button { background: transparent; border: 0; color: inherit; cursor: pointer; }
+#lcExplainQuote {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(125, 211, 252, 0.08);
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  max-height: 140px;
+  overflow: auto;
+}
+.lc-explain-body { line-height: 1.55; color: #e5eef5; font-size: 0.92rem; }
+.lc-explain-body p { margin: 0 0 8px; }
+
+.lc-version-studio {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+.lc-version-card {
+  width: min(980px, 100%);
+  max-height: min(86vh, 820px);
+  overflow: auto;
+  border-radius: 20px;
+  background: #07110d;
+  border: 1px solid rgba(0, 255, 156, 0.25);
+  padding: 16px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+.lc-version-card h3 { margin: 0 0 8px; }
+.lc-version-picks { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.lc-version-picks select, .lc-version-actions button {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  padding: 6px 8px;
+}
+.lc-diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+.lc-diff-col { border-radius: 12px; overflow: auto; max-height: 420px; background: rgba(0, 0, 0, 0.3); }
+.lc-diff-col div { padding: 1px 8px; white-space: pre; min-height: 1.35em; }
+.lc-diff-col div.chg { background: rgba(0, 255, 156, 0.12); }
+
+.lz-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  align-items: start;
+  justify-items: center;
+  padding-top: 12vh;
+}
+.lz-palette[hidden] { display: none !important; }
+.lz-palette-card {
+  width: min(640px, calc(100% - 24px));
+  border-radius: 18px;
+  background: #07120e;
+  border: 1px solid rgba(0, 255, 156, 0.3);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  animation: lc-rise 0.18s ease both;
+}
+#lzPaletteInput {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+  color: inherit;
+  padding: 16px 18px;
+  font-size: 1rem;
+  outline: none;
+}
+#lzPaletteList { list-style: none; margin: 0; padding: 8px; max-height: 360px; overflow: auto; }
+.lz-pal-item {
+  width: 100%;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.lz-pal-item small {
+  margin-left: auto;
+  color: #86efac;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+}
+.lz-pal-item.active, .lz-pal-item:hover { background: rgba(0, 255, 156, 0.12); }
+
+@keyframes lc-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes lc-sheen {
+  0%, 60% { transform: translateX(-70%); }
+  100% { transform: translateX(70%); }
+}
+@keyframes lc-orb {
+  0% { box-shadow: 0 0 0 0 rgba(0, 255, 156, 0.55); }
+  100% { box-shadow: 0 0 0 12px rgba(0, 255, 156, 0); }
+}
+@keyframes lc-caret {
+  50% { opacity: 0; }
+}
+
+@media (max-width: 860px) {
+  .lc-snippet-rail { flex-wrap: nowrap; overflow-x: auto; }
+  .lc-snippet-card { flex: 0 0 210px; }
+  #codeView.lc-v2 .lc-editor-split { grid-template-columns: 1fr; }
+  .lc-error-panel { border-left: 0; border-top: 1px solid rgba(255, 255, 255, 0.06); max-height: 280px; }
+  #codeView.lc-v2 .lc-hero-bar { padding: 14px; }
+  #codeView.lc-v2 .lc-work-cur { display: none; }
+  #codeView.lc-v2 #lcCodeWrap { min-height: 280px; max-height: 55vh; }
+  .lc-diff-grid { grid-template-columns: 1fr; }
+  .lz-palette { padding-top: 8vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #codeView.lc-v2 .lc-hero-bar,
+  #codeView.lc-v2 .lc-prompt-card,
+  #codeView.lc-v2 #lcPanel,
+  .lc-explain-dock,
+  .lz-palette-card { animation: none; }
+  #codeView.lc-v2 .lc-hero-bar::after,
+  #codeView.lc-v2 .lc-work-box.is-live .lc-work-orb,
+  #codeView.lc-v2 #lcCodeWrap.typing pre code::after { animation: none; }
+}

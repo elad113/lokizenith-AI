@@ -1074,6 +1074,9 @@ function paint(code, opts = {}){
     el.innerHTML = html.split('\n').map(x => `<span class="ln">${x}</span>`).join('\n');
   }
   updateFile();
+  if (window.LCStudio && typeof window.LCStudio.onCodePaint === 'function') {
+    window.LCStudio.onCodePaint(text, l.id);
+  }
 }
 
 function setCode(code, isVerified = false){
@@ -1373,6 +1376,24 @@ function clearLimitSlot(){
   }
 }
 
+function applyLineRepairs(code, raw){
+  const text = String(raw || '');
+  const fixes = [...text.matchAll(/^LINE\s+(\d+)\s*:\s?(.*)$/gm)];
+  if (fixes.length) {
+    const lines = String(code || '').split('\n');
+    for (const m of fixes) {
+      const n = Number(m[1]);
+      if (!n || n < 1) continue;
+      while (lines.length < n) lines.push('');
+      lines[n - 1] = m[2];
+    }
+    return lines.join('\n');
+  }
+  const fenced = extractCode(text);
+  if (fenced && /\bdefault\b/.test(fenced) && fenced.split('\n').length > 3) return fenced;
+  return code;
+}
+
 function extractStreamingCode(raw){
   if (!raw) return '';
   let text = String(raw).replace(/<think>[\s\S]*?<\/think>/gi, '');
@@ -1534,13 +1555,24 @@ async function saveCodeToHistory(opts = {}){
 
   if (existingIndex >= 0) {
     // Strictly update existing item in place: ONLY saves latest update!
+    const prev = list[existingIndex];
+    const versions = Array.isArray(prev.versions) ? prev.versions.slice(0, 24) : [];
+    if (prev.code && prev.code !== rawCode) {
+      versions.unshift({
+        id: 'v_' + now,
+        code: prev.code,
+        savedAt: prev.updatedAt || now,
+        lines: String(prev.code).split('\n').length
+      });
+    }
     const updated = {
-      ...list[existingIndex],
-      title: title || list[existingIndex].title,
+      ...prev,
+      title: title || prev.title,
       code: rawCode,
       lang: l.id,
-      prompt: st.prompt || list[existingIndex].prompt,
-      updatedAt: now
+      prompt: st.prompt || prev.prompt,
+      updatedAt: now,
+      versions
     };
     list.splice(existingIndex, 1);
     list.unshift(updated); // Move to top of history
@@ -1557,7 +1589,8 @@ async function saveCodeToHistory(opts = {}){
       lang: l.id,
       prompt: st.prompt || '',
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      versions: []
     };
     list.unshift(newDoc);
     st.activeDocId = newDoc.id;
@@ -1612,6 +1645,7 @@ function renderHistoryModal(){
         </div>
         <div class="lc-hist-actions">
           <button type="button" class="lc-hist-btn load" data-act="load" data-id="${item.id}">Load in Editor</button>
+          <button type="button" class="lc-hist-btn" data-act="versions" data-id="${item.id}">Versions</button>
           <button type="button" class="lc-hist-btn" data-act="copy" data-id="${item.id}">Copy</button>
           <button type="button" class="lc-hist-btn del" data-act="del" data-id="${item.id}">✕</button>
         </div>
@@ -1627,7 +1661,12 @@ function renderHistoryModal(){
     const item = list.find(x => x.id === id);
     if (!item) return;
 
-    if (act === 'load') {
+    if (act === 'versions') {
+      if (window.LCStudio && typeof window.LCStudio.openVersions === 'function') {
+        window.LCStudio.openVersions(item);
+      }
+      return;
+    } else if (act === 'load') {
       st.lang = item.lang;
       st.activeDocId = item.id;
       st.prompt = item.prompt || '';
@@ -1724,7 +1763,7 @@ function formatCode(){
 }
 
 /* ---------- Single-Roundtrip Turbo SSE Stream (/api/lokicode/stream) ---------- */
-async function streamLokiCodeTurbo(payload, onToken){
+async function streamLokiCodeTurbo(payload, onToken, endpoint){
   const headers = { 'Content-Type': 'application/json' };
   const tok = window.LZAuth?.getToken?.();
   if (tok) headers['x-lz-token'] = tok;
@@ -1736,7 +1775,7 @@ async function streamLokiCodeTurbo(payload, onToken){
   const ctl = new AbortController();
   const connectTimer = setTimeout(() => ctl.abort(), 16000);
   try {
-    const res = await fetch('/api/lokicode/stream', {
+    const res = await fetch(endpoint || '/api/lokicode/stream', {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
@@ -1776,6 +1815,15 @@ async function streamLokiCodeTurbo(payload, onToken){
           const j = JSON.parse(d);
           if (j.account) {
             window.LZAuth?.updateAccountState?.(j.account);
+          }
+          if (j.notice && window.LCStudio && typeof window.LCStudio.showNotice === 'function') {
+            window.LCStudio.showNotice(j.notice, j.fallback || j.provider);
+          }
+          if (j.provider && window.LCStudio && typeof window.LCStudio.setProvider === 'function') {
+            window.LCStudio.setProvider(j.provider, j.model);
+          }
+          if (j.timing && window.LCStudio && typeof window.LCStudio.setTiming === 'function') {
+            window.LCStudio.setTiming(j.timing);
           }
           if (j.delta) {
             full += j.delta;
@@ -1875,9 +1923,12 @@ async function generate(e){
       const now = performance.now();
       if (now - lastPaintAt < 24 && busy) return;
       lastPaintAt = now;
-      if (latestStreamedCode) {
+        if (latestStreamedCode) {
         st.code = latestStreamedCode;
         paint(latestStreamedCode, { fast: true });
+        const liveLines = latestStreamedCode.split('\n').length;
+        const liveEl = $('#lcLiveLines');
+        if (liveEl) liveEl.textContent = liveLines + ' lines';
         const tokens = (latestStreamedCode.match(/\S+/g) || []).length;
         const m = latestStreamedCode.match(/([A-Za-z_]\w*)\s*$/);
         updateTokenAudit(m ? m[1] : 'stream', tokens);
@@ -1947,6 +1998,8 @@ async function generate(e){
     }
 
     let audited = quickStaticSanitize(generatedCode, l.id);
+    let lslVerified = l.id !== 'lsl';
+    let lslErrors = [];
     // If LSL or MATLAB script was generated, run instant deterministic compiler normalization (<2ms)
     if (l.id === 'lsl' || l.id === 'matlab') {
       try {
@@ -1960,8 +2013,45 @@ async function generate(e){
           if (vj && vj.code) {
             audited = { code: vj.code, fixes: [...audited.fixes, ...(vj.fixes || [])] };
           }
+          if (l.id === 'lsl') {
+            lslErrors = Array.isArray(vj.errors) ? vj.errors : [];
+            lslVerified = !!vj.valid && lslErrors.length === 0;
+            if (window.LCStudio) window.LCStudio.showDiagnostics(vj.errors, vj.warnings, vj.code || audited.code);
+          }
         }
       } catch (_vErr) {}
+    }
+
+    if (l.id === 'lsl' && !lslVerified && lslErrors.length) {
+      advanceWorkStep('4. One fast repair pass on the remaining errors…');
+      const srcLines = String(audited.code || '').split('\n');
+      const repairErrors = lslErrors.slice(0, 40).map((msg) => {
+        const m = String(msg).match(/^Line (\d+):\s*(.*)$/);
+        const lineNo = m ? Number(m[1]) : 0;
+        return {
+          line: lineNo || undefined,
+          message: m ? m[2] : String(msg),
+          text: lineNo ? (srcLines[lineNo - 1] || '') : ''
+        };
+      });
+      try {
+        const repairRaw = await streamLokiCodeTurbo({ lang: 'lsl', repair: true, errors: repairErrors }, onStreamChunk, '/api/lokicode/repair');
+        const repaired = applyLineRepairs(audited.code, repairRaw);
+        const again = await fetch('/api/lokicode/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lang: 'lsl', code: repaired })
+        });
+        if (again.ok) {
+          const vj2 = await again.json();
+          audited = { code: vj2.code || repaired, fixes: [...audited.fixes, 'Repair pass'] };
+          lslErrors = Array.isArray(vj2.errors) ? vj2.errors : [];
+          lslVerified = !!vj2.valid && lslErrors.length === 0;
+          if (window.LCStudio) window.LCStudio.showDiagnostics(vj2.errors, vj2.warnings, audited.code);
+        } else {
+          audited = { code: repaired, fixes: audited.fixes };
+        }
+      } catch (_repairErr) {}
     }
 
     if (previousCode.trim() && previousCode.trim() !== audited.code.trim()) {
@@ -1969,14 +2059,22 @@ async function generate(e){
       const diffBtn = $('#lcDiffToggle');
       if (diffBtn) diffBtn.hidden = false;
     }
-    setCode(audited.code, true);
+    setCode(audited.code, lslVerified);
     if (diffViewOpen) renderDiffView();
 
     const lineCount = audited.code.split('\n').length;
     const tokens = (audited.code.match(/\S+/g) || []).length;
-    updateTokenAudit('All symbols valid', tokens);
-    advanceWorkStep(`3. Syntax & structural audit (${lineCount} lines) complete.`);
-    finishWorkUI(`✓ Generated & verified ${lineCount} lines of ${l.name} (${tokens} symbols)`);
+    const elapsed = fmtElapsed(performance.now() - workStartMs);
+    updateTokenAudit(lslVerified ? 'All symbols valid' : 'Needs review', tokens);
+    const liveEl = $('#lcLiveLines');
+    if (liveEl) liveEl.textContent = lineCount + ' lines';
+    if (l.id === 'lsl' && !lslVerified) {
+      advanceWorkStep(`Checked ${lineCount} lines in ${elapsed} — ${lslErrors.length} error(s) remain.`);
+      finishWorkUI(`Checked ${lineCount} lines in ${elapsed} — ${lslErrors.length} error(s) still open`);
+    } else {
+      advanceWorkStep(`3. Syntax & structural audit (${lineCount} lines) complete.`);
+      finishWorkUI(`✓ Verified ${lineCount} lines of ${l.name} in ${elapsed}`);
+    }
 
     if (imgsSnapshot.length > 0) {
       attachedImages = [];
@@ -1995,7 +2093,12 @@ async function generate(e){
     });
 
     A.sound && A.sound('done');
-    A.toast(`✓ ${l.name} code ${st.mode === 'edit' ? 'edited' : 'generated'} & verified!`, 'ok');
+    A.toast(
+      lslVerified
+        ? `✓ ${l.name} code ${st.mode === 'edit' ? 'edited' : 'generated'} & verified (${lineCount} lines, ${elapsed})`
+        : `${l.name} written (${lineCount} lines, ${elapsed}) — ${lslErrors.length} error(s) left in the panel`,
+      lslVerified ? 'ok' : 'err'
+    );
   } catch (err) {
     if (err && err.code === 'LIMIT_REACHED') {
       finishWorkUI(`⚠️ Limit reached`);
@@ -3048,6 +3151,6 @@ function init(){
   });
 }
 
-window.LokiCode = {open, onShow, run, verifyFinalCode, saveCodeToHistory, LANGS, setMode, onTeamUpdate, applyServerCodeState, refreshAiIdeas};
+window.LokiCode = {open, onShow, run, verifyFinalCode, saveCodeToHistory, LANGS, setMode, onTeamUpdate, applyServerCodeState, refreshAiIdeas, getHistory, setCode, stream: streamLokiCodeTurbo, getState: () => st, applyLineRepairs};
 init();
 })();

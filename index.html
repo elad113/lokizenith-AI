@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/atom-one-dark.min.css">
 <link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/v22.css">
+<link rel="stylesheet" href="/lokicode-v2.css">
 <meta property="og:title" content="Lokizenith AI — AI Chat & Code Studio" />
 <meta property="og:description" content="An advanced AI platform for chatting, coding, and creative tasks featuring voice interaction, design tools, and interactive learning." />
 <meta property="og:url" content="https://lokizenith.com/" />
@@ -92,7 +93,7 @@
       <button class="icon-btn only-mobile" id="closeSidebar" aria-label="Close menu">✕</button>
     </div>
 
-    <button class="btn-new" id="newChat"><span class="plus">＋</span> New chat <kbd>Ctrl K</kbd></button>
+    <button class="btn-new" id="newChat"><span class="plus">＋</span> New chat</button>
     <button class="btn-lokicode" id="openLokiCode">
       <span class="lc-icon">&lt;/&gt;</span>
       <span class="lc-text"><b>LokiCode</b><small>Write · Run · Ship</small></span>
@@ -258,18 +259,20 @@
     </section>
 
     <!-- ===== LOKICODE VIEW (REBUILT FROM 0 — REALTIME STARK EXTRA HIGH STUDIO) ===== -->
-    <section class="view code-view" id="codeView" aria-label="LokiCode Studio">
+    <section class="view code-view lc-v2" id="codeView" aria-label="LokiCode Studio">
       <div class="lc-hero-bar">
         <button class="back-btn" id="lcBack" type="button">‹ Back to Chat</button>
         <div class="lc-title-wrap">
           <div class="lc-title-row">
             <h1><span class="lc-glyph">&lt;/&gt;</span> LokiCode</h1>
-            <span class="lc-engine-pill">⚡ Lokizen 4.0 Stark · Real-Time Streaming</span>
+            <span class="lc-engine-pill">⚡ Groq · live LSL verify</span>
           </div>
-          <span class="lc-sub">Master AI Studio across 11 languages (incl. Rust, Go, LSL2 &amp; MATLAB) · Live Compiler + Vision + Security Audit</span>
+          <span class="lc-sub">Eleven languages, a streaming editor, and a Second Life LSL checker that reads each finished line.</span>
         </div>
         <div class="lc-stats-badge" id="lcStats">Python · Ready</div>
       </div>
+      <div class="lc-provider-notice" id="lcProviderNotice" hidden></div>
+      <div class="lc-snippet-rail" id="lcSnippetRail" hidden></div>
 
       <!-- Team Collaboration Workspace Bar -->
       <div class="lc-team-bar" id="lcTeamBar"></div>
@@ -352,6 +355,8 @@
             <span class="lc-work-orb" id="lcWorkOrb"></span>
             <span class="lc-work-status" id="lcWorkStatus">Working</span>
             <span class="lc-work-timer" id="lcWorkTimer">0.0s</span>
+            <span class="lc-live-lines" id="lcLiveLines">0 lines</span>
+            <span class="lc-provider-chip" id="lcProviderChip">standby</span>
             <span class="lc-work-cur" id="lcWorkCur">Initializing Lokizen 4.0 Stark (Turbo Engine)…</span>
             <span class="lc-word-audit" id="lcWordAudit" hidden>✓ <code id="lcWordToken">init</code> OK</span>
             <button type="button" class="lc-work-arrow" id="lcWorkToggle" aria-expanded="false" title="Show what LokiCode worked on, finished, and is currently working on">
@@ -388,6 +393,7 @@
             <span class="lc-verified-pill" id="lcVerifiedPill" hidden>✓ Verified OK</span>
           </div>
           <div class="lc-bar-actions">
+            <button type="button" id="lcSnippetsBtn" class="lc-btn-subtle" title="Insert a tested LSL snippet">📚 Snippets</button>
             <button type="button" id="lcTemplates" class="lc-btn-subtle" title="Starter code templates for all 11 languages">📋 Templates</button>
             <button type="button" id="lcOptimize" class="lc-btn-subtle" title="AI Optimize performance, complexity &amp; clean code">⚡ Optimize</button>
             <button type="button" id="lcSecurityAudit" class="lc-btn-subtle" title="AI Security, Bug &amp; Edge-Case Audit">🛡️ Security Audit</button>
@@ -427,9 +433,28 @@
         </div>
 
         <div class="lc-diff-panel" id="lcDiffView" hidden></div>
-        <div class="lc-code" id="lcCodeWrap">
-          <pre><code id="lcCode" class="hljs">// Choose a language above, write what you want in the prompt box, and click Send &amp; Generate ⚡</code></pre>
+        <div class="lc-editor-split">
+          <div class="lc-code" id="lcCodeWrap">
+            <pre><code id="lcCode" class="hljs">// Choose a language above, write what you want in the prompt box, and click Send &amp; Generate ⚡</code></pre>
+          </div>
+          <aside class="lc-error-panel" id="lcErrorPanel" aria-label="Live LSL diagnostics">
+            <header>
+              <b>Live diagnostics</b>
+              <span id="lcErrCount">Clean</span>
+            </header>
+            <ul id="lcErrList">
+              <li class="lc-err-empty">LSL errors and warnings show up here as each finished line is checked.</li>
+            </ul>
+          </aside>
         </div>
+        <section class="lc-explain-dock" id="lcExplainDock" hidden>
+          <header>
+            <b id="lcExplainTitle">Explain</b>
+            <button type="button" id="lcExplainClose" aria-label="Close explanation">✕</button>
+          </header>
+          <pre id="lcExplainQuote"></pre>
+          <div id="lcExplainBody" class="lc-explain-body"></div>
+        </section>
       </div>
     </section>
 
@@ -784,6 +809,13 @@
   </div>
 </div>
 
+<div class="lz-palette" id="lzPalette" hidden>
+  <div class="lz-palette-card" role="dialog" aria-modal="true" aria-label="Command palette">
+    <input id="lzPaletteInput" type="text" placeholder="Jump to a page, chat, or script…" autocomplete="off" spellcheck="false">
+    <ul id="lzPaletteList"></ul>
+  </div>
+</div>
+
 <div class="toasts" id="toasts"></div>
 
 <script src="https://www.paypal.com/sdk/js?client-id=BAAX2U_UunOALXjCFc5_ByUQ-Z41HINtiJNFrJYiIZImn34v7OtTrwFlPGw7Zrb1oJ4uy5n5KX0Qq73UxU&vault=true&intent=subscription" data-sdk-integration-source="button-factory" async></script>
@@ -799,6 +831,7 @@
 <script src="/events.js"></script>
 <script src="/app.js"></script>
 <script src="/lokicode.js"></script>
+<script src="/lokicode-v2.js"></script>
 <script src="/call.js"></script>
 <script src="/features.js"></script>
 <script src="/changelog.js"></script>

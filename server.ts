@@ -96,9 +96,18 @@ import {
   buildFastLokiCodePrompt,
   buildImageAwarePromptText,
   analyzeAndFixLslScript,
+  checkLslIncremental,
   simulateLslExecution,
   generateOfflineProfessionalLsl,
 } from './src/utils/lslSpecialist.ts';
+import { getLslSnippets } from './src/utils/lslSnippets.ts';
+import { explainLslSelection } from './src/utils/lslExplain.ts';
+import {
+  buildLslRepairMessages,
+  groqFallbackNotice,
+  planGroqAttempt,
+  streamGroqGuarded,
+} from './src/server/groqLoki.ts';
 import {
   verifyAndRankSources,
   classifyTrustTier,
@@ -5507,6 +5516,41 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
     };
 
     try {
+      const groqPlan = planGroqAttempt();
+      const groqStarted = Date.now();
+      if (groqPlan.action === 'skip') {
+        res.write(`data: ${JSON.stringify({ notice: groqFallbackNotice(undefined, 'missing_key'), fallback: 'gemini', provider: 'gemini' })}\n\n`);
+      } else if (parsedImages.length > 0) {
+        res.write(`data: ${JSON.stringify({ notice: 'Image attachments use the Gemini vision path.', fallback: 'gemini', provider: 'gemini' })}\n\n`);
+      } else {
+        const groqKey = String(process.env.GROQ_API_KEY || '');
+        const groqOut = await streamGroqGuarded({
+          apiKey: groqKey,
+          model: groqPlan.model,
+          maxTokens: 8000,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userText },
+          ],
+          onModel: (model, notice) => {
+            res.write(`data: ${JSON.stringify({ provider: 'groq', model, notice, busyFast: !!notice })}\n\n`);
+          },
+          onDelta: (t) => {
+            sentAny = true;
+            streamedAcc += t;
+            writeChunk(t);
+          },
+        });
+        if (groqOut.ok || sentAny) {
+          const ms = Date.now() - groqStarted;
+          res.write(`data: ${JSON.stringify({ timing: { ms, provider: 'groq', model: groqOut.model || groqPlan.model, lines: streamedAcc.split('\n').length } })}\n\n`);
+          if (cacheKey && streamedAcc.length > 20) setLokiCodeCached(cacheKey, streamedAcc);
+          finishStream();
+          return;
+        }
+        res.write(`data: ${JSON.stringify({ notice: groqFallbackNotice(groqOut.status), fallback: 'gemini', provider: 'gemini' })}\n\n`);
+      }
+
       // 0. Sub-5ms LRU cache hit for repeated prompts (zero upstream wait)
       if (cacheKey) {
         const cached = getLokiCodeCached(cacheKey);
@@ -5607,10 +5651,29 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
   });
 
   // Deterministic sub-5ms Static Compiler Verification & Auto-Fixer (Second Life LSL2/Mono & MATLAB)
+  app.get('/api/lokicode/snippets', (_req, res) => {
+    res.json({ ok: true, snippets: getLslSnippets() });
+  });
+
   app.post('/api/lokicode/verify', (req, res) => {
     try {
       const lang = String(req.body?.lang || 'lsl').toLowerCase().trim();
       const code = String(req.body?.code || '');
+      if (lang === 'lsl' && req.body?.streaming) {
+        const audit = checkLslIncremental(code);
+        return res.json({
+          ok: true,
+          instant: true,
+          streaming: true,
+          lang: 'lsl',
+          valid: audit.valid,
+          code: audit.code,
+          errors: audit.errors,
+          warnings: audit.warnings,
+          fixes: audit.fixes,
+          stats: audit.stats,
+        });
+      }
       if (lang === 'lsl') {
         const audit = analyzeAndFixLslScript(code);
         return res.json({
@@ -5642,6 +5705,151 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
       return res.json({ ok: true, instant: false, lang, valid: true, code, errors: [], warnings: [], fixes: [] });
     } catch (e: any) {
       return res.status(500).json({ ok: false, error: e?.message || 'Verification failed' });
+    }
+  });
+
+  // One fast repair pass. The model sees only the broken lines, not the whole script.
+  app.post('/api/lokicode/repair', async (req, res) => {
+    const authUser = getAuthUser(req);
+    const enforce = enforceServerFeatureQuota(authUser, null, req.body?.turnId);
+    if (!enforce.ok) return res.status(enforce.status).json(enforce.body);
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const writeChunk = (delta: string) => {
+      if (!delta) return;
+      res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+    };
+    const finish = () => {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
+
+    const errors = Array.isArray(req.body?.errors) ? req.body.errors : [];
+    const messages = buildLslRepairMessages(
+      errors.map((e: any) => ({
+        line: Number(e?.line) || undefined,
+        message: String(e?.message || e || '').slice(0, 400),
+        text: String(e?.text || '').slice(0, 400),
+      }))
+    );
+    const started = Date.now();
+    const plan = planGroqAttempt();
+    try {
+      if (plan.action === 'request') {
+        const out = await streamGroqGuarded({
+          apiKey: String(process.env.GROQ_API_KEY || ''),
+          model: plan.model,
+          maxTokens: 1600,
+          messages,
+          onModel: (model, notice) => {
+            res.write(`data: ${JSON.stringify({ provider: 'groq', model, notice, busyFast: !!notice })}\n\n`);
+          },
+          onDelta: writeChunk,
+        });
+        if (out.ok) {
+          res.write(`data: ${JSON.stringify({ timing: { ms: Date.now() - started, provider: 'groq', model: out.model || plan.model } })}\n\n`);
+          finish();
+          return;
+        }
+        res.write(`data: ${JSON.stringify({ notice: groqFallbackNotice(out.status), fallback: 'gemini', provider: 'gemini' })}\n\n`);
+      } else {
+        res.write(`data: ${JSON.stringify({ notice: groqFallbackNotice(undefined, 'missing_key'), fallback: 'gemini', provider: 'gemini' })}\n\n`);
+      }
+
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (apiKey) {
+        const userText = messages.map((m) => m.content).join('\n\n');
+        const ok = await raceGeminiStreams(
+          apiKey,
+          [{ role: 'user', parts: [{ text: userText }] }],
+          messages[0].content,
+          1600,
+          writeChunk,
+          { preferLite: true, firstTokenTimeoutMs: 4000 }
+        );
+        if (ok) {
+          res.write(`data: ${JSON.stringify({ timing: { ms: Date.now() - started, provider: 'gemini' } })}\n\n`);
+          finish();
+          return;
+        }
+      }
+      writeChunk('LINE 1: // Repair model unavailable — fix the reported lines in the editor.');
+      finish();
+    } catch {
+      writeChunk('LINE 1: // Repair model unavailable — fix the reported lines in the editor.');
+      finish();
+    }
+  });
+
+  app.post('/api/lokicode/explain', async (req, res) => {
+    const authUser = getAuthUser(req);
+    const enforce = enforceServerFeatureQuota(authUser, null, req.body?.turnId);
+    if (!enforce.ok) return res.status(enforce.status).json(enforce.body);
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const writeChunk = (delta: string) => {
+      if (!delta) return;
+      res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+    };
+    const finish = () => {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
+    const code = String(req.body?.code || '').slice(0, 12000);
+    const lang = String(req.body?.lang || 'lsl');
+    const local = lang === 'lsl' ? explainLslSelection(code) : '';
+    const started = Date.now();
+    const plan = planGroqAttempt();
+    const sys = `Explain the selected ${lang} code in plain words for someone who writes Second Life scripts. Be concise, concrete, and accurate. No code dump unless a signature is required.`;
+    try {
+      if (plan.action === 'request') {
+        const out = await streamGroqGuarded({
+          apiKey: String(process.env.GROQ_API_KEY || ''),
+          model: plan.model,
+          maxTokens: 900,
+          messages: [
+            { role: 'system', content: sys },
+            { role: 'user', content: code },
+          ],
+          onModel: (model, notice) => {
+            res.write(`data: ${JSON.stringify({ provider: 'groq', model, notice, busyFast: !!notice })}\n\n`);
+          },
+          onDelta: writeChunk,
+        });
+        if (out.ok) {
+          res.write(`data: ${JSON.stringify({ timing: { ms: Date.now() - started, provider: 'groq', model: out.model } })}\n\n`);
+          finish();
+          return;
+        }
+        res.write(`data: ${JSON.stringify({ notice: groqFallbackNotice(out.status), fallback: 'gemini' })}\n\n`);
+      }
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (apiKey) {
+        const ok = await raceGeminiStreams(
+          apiKey,
+          [{ role: 'user', parts: [{ text: code }] }],
+          sys,
+          900,
+          writeChunk,
+          { preferLite: true, firstTokenTimeoutMs: 3500 }
+        );
+        if (ok) {
+          finish();
+          return;
+        }
+      }
+      res.write(`data: ${JSON.stringify({ provider: 'local', notice: 'Showing the built-in LSL explanation.' })}\n\n`);
+      writeChunk(local || 'Select a block of code and I will explain it.');
+      finish();
+    } catch {
+      writeChunk(local || 'Could not reach a model. The selection is shown above.');
+      finish();
     }
   });
 

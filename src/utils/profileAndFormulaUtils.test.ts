@@ -98,6 +98,9 @@ test('extractTeamChatMentions: detects @AI and @member by username or displayNam
   const r1 = extractTeamChatMentions('Hey @Nova and @AppleJuice check this out @AI', members);
   assert.equal(r1.askAi, true);
   assert.deepEqual(r1.mentionedUsernames, ['EladBenczel', 'AppleJuice']);
+  const r2 = extractTeamChatMentions('@Loki what is 2+2?', members);
+  assert.equal(r2.askAi, true);
+  assert.deepEqual(r2.mentionedUsernames, []);
 });
 
 test('upsertSameDayChangelog: merges new items into today entry instead of duplicating', () => {

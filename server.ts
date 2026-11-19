@@ -864,6 +864,19 @@ async function startServer() {
     };
   }
 
+  function pushRoomActivity(room: any, text: string, kind: string, username: string) {
+    if (!room) return;
+    if (!Array.isArray(room.activity)) room.activity = [];
+    room.activity.unshift({
+      id: uid('act'),
+      kind,
+      text: String(text || '').slice(0, 180),
+      username,
+      ts: Date.now(),
+    });
+    if (room.activity.length > 80) room.activity.length = 80;
+  }
+
   async function processTeamChatMessage(
     user: AccountRecord,
     room: any,
@@ -873,6 +886,7 @@ async function startServer() {
     extra?: {
       attachments?: any[];
       voiceRecording?: any;
+      parentId?: string;
     }
   ) {
     const content = String(rawContent || '').trim();
@@ -940,16 +954,35 @@ async function startServer() {
       mentions: mentionResult.mentionedUsernames.length ? mentionResult.mentionedUsernames : undefined,
       ts: Date.now(),
     };
+    const parentId = extra?.parentId ? String(extra.parentId).slice(0, 80) : '';
+    if (parentId) {
+      let parent = room.messages.find((m: any) => m.id === parentId);
+      if (parent?.threadParentId) {
+        parent = room.messages.find((m: any) => m.id === parent.threadParentId) || parent;
+      }
+      if (!parent) {
+        return { ok: false as const, status: 400, error: 'That thread is no longer in the room.' };
+      }
+      userMsg.threadParentId = parent.id;
+    }
     room.messages.push(userMsg);
     if (room.messages.length > 200) room.messages = room.messages.slice(-200);
     room.updatedAt = Date.now();
     persistStore();
 
+    pushRoomActivity(
+      room,
+      `${user.displayName || user.username} ${wantAi ? 'asked Loki' : userMsg.threadParentId ? 'replied in a thread' : 'sent a message'}`,
+      wantAi ? 'ai' : 'message',
+      user.username
+    );
+    persistStore();
     sendToUsers(room.memberIds, {
       type: 'teamchat:message',
       chatId: room.id,
       message: userMsg,
       updatedAt: room.updatedAt,
+      activity: room.activity.slice(0, 40),
     });
 
     // Notify mentioned members immediately with sound trigger + notification
@@ -994,7 +1027,7 @@ async function startServer() {
       };
     }
 
-    const cleanQuestion = content.replace(/(?:^|\s)(@ai|@lokizenith|\/ai)\b\s*/gi, ' ').trim() || content || 'Analyze the shared attachment in this team chat.';
+    const cleanQuestion = content.replace(/(?:^|\s)(@ai|@lokizenith|@loki|\/ai)\b\s*/gi, ' ').trim() || content || 'Analyze the shared attachment in this team chat.';
     const recentMsgs = room.messages.slice(-14).map((m: any) => ({
       role: m.role === 'assistant' ? 'assistant' : 'user',
       content: m.role === 'assistant' ? m.content : `[${m.displayName || m.username}]: ${m.content}`,
@@ -1046,17 +1079,19 @@ async function startServer() {
     const quotaOut = consumeUserTokens(user, estTokens);
     sendToUser(user.id, { type: 'quota:update', account: quotaOut.account });
 
-    const botMsg = {
+    const botMsg: any = {
       id: uid('msg'),
       userId: 'ai',
       username: 'Lokizenith AI',
-      displayName: 'Lokizenith AI',
+      displayName: 'Loki',
       role: 'assistant' as const,
       content: aiReply,
       ts: Date.now(),
     };
+    if (userMsg.threadParentId) botMsg.threadParentId = userMsg.threadParentId;
     room.messages.push(botMsg);
     room.updatedAt = Date.now();
+    pushRoomActivity(room, 'Loki replied in the room', 'ai', 'Loki');
     persistStore();
 
     sendToUsers(room.memberIds, {
@@ -1064,6 +1099,7 @@ async function startServer() {
       chatId: room.id,
       message: botMsg,
       updatedAt: room.updatedAt,
+      activity: room.activity.slice(0, 40),
     });
 
     return { ok: true as const, message: userMsg, aiMessage: botMsg, account: quotaOut.account };
@@ -1083,6 +1119,7 @@ async function startServer() {
     }
     (ws as any).userId = user.id;
     (ws as any).username = user.username;
+    (ws as any).authToken = token;
     (ws as any).connectedAt = now;
     (ws as any).lastPingFlushAt = now;
     user.lastSeenAt = now;
@@ -1208,6 +1245,7 @@ async function startServer() {
           {
             attachments: msg.attachments,
             voiceRecording: msg.voiceRecording,
+            parentId: msg.parentId ? String(msg.parentId) : undefined,
           }
         );
         if (!res.ok) {
@@ -1218,6 +1256,37 @@ async function startServer() {
             error: (res as any).message || res.error,
           });
         }
+        return;
+      }
+
+      if ((msg.type === 'teamchat:react' || msg.type === 'teamchat:pin') && msg.chatId && msg.messageId) {
+        const room = store.teamChats[String(msg.chatId)];
+        if (!room || !canAccessRoom(room, userId)) return;
+        const message: any = room.messages.find((m: any) => m.id === String(msg.messageId));
+        if (!message) return;
+        if (msg.type === 'teamchat:react') {
+          const allowed = ['👍', '❤️', '😂', '🎉', '🔥', '✅', '👀'];
+          const emoji = String(msg.emoji || '');
+          if (!allowed.includes(emoji)) return;
+          if (!message.reactions || typeof message.reactions !== 'object') message.reactions = {};
+          const list = new Set<string>(Array.isArray(message.reactions[emoji]) ? message.reactions[emoji] : []);
+          if (list.has(wsUser.username)) list.delete(wsUser.username);
+          else list.add(wsUser.username);
+          message.reactions[emoji] = [...list];
+          if (!message.reactions[emoji].length) delete message.reactions[emoji];
+          pushRoomActivity(room, `${wsUser.username} reacted ${emoji}`, 'reaction', wsUser.username);
+        } else {
+          message.pinned = !message.pinned;
+          pushRoomActivity(room, `${wsUser.username} ${message.pinned ? 'pinned' : 'unpinned'} a message`, 'pin', wsUser.username);
+        }
+        room.updatedAt = Date.now();
+        persistStore();
+        sendToUsers(room.memberIds, {
+          type: 'teamchat:message_updated',
+          chatId: room.id,
+          message,
+          activity: ((room as any).activity || []).slice(0, 40),
+        });
         return;
       }
 
@@ -1250,6 +1319,13 @@ async function startServer() {
           joinedAt: now,
         });
         const serialized = serializeTeamCall(call);
+        pushRoomActivity(room, `${wsUser.username} started a voice room`, 'call', wsUser.username);
+        persistStore();
+        sendToUsers(room.memberIds, {
+          type: 'teamchat:activity',
+          chatId: room.id,
+          activity: ((room as any).activity || []).slice(0, 40),
+        });
         sendToUsers(room.memberIds, {
           type: 'teamcall:state',
           chatId: room.id,
@@ -1322,6 +1398,40 @@ async function startServer() {
               call: serializeTeamCall(activeTeamCalls.get(room.id)),
             });
           }
+        }
+        return;
+      }
+
+      if (msg.type === 'teamcall:signal' && msg.chatId && msg.toUserId && msg.signal) {
+        const call = activeTeamCalls.get(String(msg.chatId));
+        if (!call || !call.participants.has(wsUser.id) || !call.participants.has(String(msg.toUserId))) return;
+        const signal = msg.signal;
+        const kind = String(signal.kind || '');
+        if (kind !== 'offer' && kind !== 'answer' && kind !== 'ice') return;
+        sendToUser(String(msg.toUserId), {
+          type: 'teamcall:signal',
+          chatId: call.chatId,
+          fromUserId: wsUser.id,
+          toUserId: String(msg.toUserId),
+          signal: kind === 'ice'
+            ? { kind, candidate: signal.candidate || null }
+            : { kind, sdp: signal.sdp || null },
+        });
+        return;
+      }
+
+      if (msg.type === 'teamcall:mute' && msg.chatId) {
+        const room = store.teamChats[String(msg.chatId)];
+        const call = activeTeamCalls.get(String(msg.chatId));
+        if (!call || !call.participants.has(wsUser.id)) return;
+        const participant = call.participants.get(wsUser.id)!;
+        participant.muted = !!msg.muted;
+        if (room) {
+          sendToUsers(room.memberIds, {
+            type: 'teamcall:state',
+            chatId: call.chatId,
+            call: serializeTeamCall(call),
+          });
         }
         return;
       }
@@ -1966,6 +2076,9 @@ async function startServer() {
 
   app.post('/api/auth/register', (req, res) => {
     const { username, password, inviteCode, device } = req.body || {};
+    if (String(password || '').length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+    }
     const devMeta = getReqDeviceMeta(req, device);
     const out = registerAccount(String(username || ''), String(password || ''), inviteCode ? String(inviteCode) : undefined, devMeta);
     if (!out.ok) return res.status(400).json({ error: out.error });
@@ -1977,6 +2090,40 @@ async function startServer() {
       ip: devMeta?.ip,
     });
     return res.json(buildAuthSuccessResponse(out));
+  });
+
+  app.get('/api/auth/sessions', (req, res) => {
+    const token = extractTokenFromReq(req);
+    const user = getAuthUser(req);
+    if (!user || !token) return res.status(401).json({ error: 'Not authenticated' });
+    const mine = Object.values(store.sessions).filter((s) => s.userId === user.id);
+    const others = mine.filter((s) => s.token !== token).length;
+    return res.json({ ok: true, count: mine.length, others });
+  });
+
+  app.post('/api/auth/logout-others', (req, res) => {
+    const token = extractTokenFromReq(req);
+    const user = getAuthUser(req);
+    if (!user || !token) return res.status(401).json({ error: 'Not authenticated' });
+    const others = Object.entries(store.sessions)
+      .filter(([tok, sess]) => sess.userId === user.id && tok !== token)
+      .map(([tok]) => tok);
+    for (const tok of others) logoutToken(tok);
+    const sockets = clientsByUserId.get(user.id);
+    if (sockets) {
+      for (const sock of [...sockets]) {
+        if ((sock as any).authToken === token) continue;
+        sendWs(sock, { type: 'session:revoked', reason: 'Signed out from another device' });
+        try { sock.close(); } catch { /* already closed */ }
+      }
+    }
+    recordAuditLog({
+      category: 'security',
+      action: 'LOGOUT_OTHER_DEVICES',
+      actor: user.username,
+      detail: `Signed out ${others.length} other session(s)`,
+    });
+    return res.json({ ok: true, revokedCount: others.length });
   });
 
   app.post('/api/auth/login', (req, res) => {
@@ -2097,7 +2244,28 @@ async function startServer() {
     if (!pubProfile) {
       return res.status(404).json({ ok: false, error: 'Profile not found.' });
     }
-    return res.json({ ok: true, profile: pubProfile });
+    const account = findUserByUsername(targetUsername);
+    let teamMessages = 0;
+    let teamRooms = 0;
+    if (account) {
+      for (const room of Object.values(store.teamChats)) {
+        if (!room.memberIds?.includes(account.id)) continue;
+        teamRooms += 1;
+        teamMessages += (room.messages || []).filter((m) => m.userId === account.id).length;
+      }
+    }
+    return res.json({
+      ok: true,
+      profile: {
+        ...pubProfile,
+        stats: {
+          teamMessages,
+          teamRooms,
+          hoursActive: Math.round(Number(pubProfile.totalTimeSeconds || 0) / 3600),
+          badgeCount: Array.isArray(pubProfile.profileBadges) ? pubProfile.profileBadges.length : 0,
+        },
+      },
+    });
   });
 
   // ---- Share Conversation via Unique Link Endpoints (with weekly plan quota: Free 4/wk, Pro 12/wk, Ultimate Unlimited) ----
@@ -3852,6 +4020,7 @@ ${JSON.stringify(digest)}`,
       {
         attachments: req.body?.attachments,
         voiceRecording: req.body?.voiceRecording,
+        parentId: req.body?.parentId ? String(req.body.parentId) : undefined,
       }
     );
     if (!out.ok) {
@@ -6826,6 +6995,15 @@ Feel free to ask for additional columns or more granular data!`;
     ? `לגבי "${cleanUser.slice(0, 80)}": הנושא כולל מספר היבטים מרכזיים שכדאי לקחת בחשבון. שאל אותי כל פרט נוסף ונצלול לעומק!`
     : `Here is a direct overview regarding "${cleanUser.slice(0, 80)}": feel free to ask a follow-up question or specify any detail you'd like to explore further.`;
 }
+
+  const sendLegalPage = (file: string, res: express.Response) => {
+    const pub = path.join(process.cwd(), 'public', file);
+    res.sendFile(pub, (err) => {
+      if (err) res.sendFile(path.join(process.cwd(), 'dist', file));
+    });
+  };
+  app.get(['/terms', '/terms/'], (_req, res) => sendLegalPage('terms.html', res));
+  app.get(['/privacy', '/privacy/'], (_req, res) => sendLegalPage('privacy.html', res));
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

@@ -88,7 +88,7 @@ const DEFAULTS = {
   name:'', aboutMe:'', howRespond:'', voiceLang:'auto', autoSpeak:false, showTimer:true,
   lang: detectLang(), replyInLang:true, perfMode:false, animSpeed:1, bubbleStyle:'glass', fontFamily:'inter',
   compact:false, autoScroll:true, voiceName:'', voiceRate:1, voicePitch:1, callSilence:1.2, callCaptions:true,
-  quizDifficulty:'medium', quizLength:8, lessonLang: detectLang(), workStyle:'nebula'
+  quizDifficulty:'medium', quizLength:8, lessonLang: detectLang(), workStyle:'nebula', uiTheme:'emerald'
 };
 function detectLang(){ const l = (navigator.language || 'en').toLowerCase(); return l.startsWith('he') || l.startsWith('iw') ? 'he' : l.startsWith('ar') ? 'ar' : 'en'; }
 const LANG_NAME = {en:'English', he:'Hebrew', ar:'Arabic'};
@@ -123,6 +123,7 @@ function applySettings(){
   r.setProperty('--font', {inter:"'Inter',system-ui,sans-serif", system:'system-ui,-apple-system,"Segoe UI",sans-serif', rubik:"'Rubik',system-ui,sans-serif", mono:"'JetBrains Mono',monospace"}[S.fontFamily] || "'Inter',system-ui,sans-serif");
   if (S.fontFamily === 'rubik' && !document.getElementById('rubikFont')){ const l = document.createElement('link'); l.id = 'rubikFont'; l.rel = 'stylesheet'; l.href = 'https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap'; document.head.appendChild(l); }
   r.setProperty('--spd', String(1 / Math.max(.25, +S.animSpeed || 1)));
+  document.documentElement.dataset.lzTheme = S.uiTheme || 'emerald';
   if (S.lang && ['en', 'he', 'ar'].includes(S.lang)) S.lessonLang = S.lang;
   if (window.I18N) I18N.setLang(S.lang);
   if (window.Lessons && Lessons.refresh) Lessons.refresh();
@@ -1362,6 +1363,27 @@ function toggleMenu(which, force){
 }
 
 /* ================= VIEWS ================= */
+function lzSignedIn(){
+  try { return !!localStorage.getItem('lz.authToken'); } catch(_){ return false; }
+}
+function ensureRichText(){
+  if (window.marked && window.DOMPurify && window.hljs) return Promise.resolve();
+  if (!window.LZ || !LZ.loadScript) return Promise.resolve();
+  if (!window.__lzRich){
+    window.__lzRich = Promise.all([
+      LZ.loadScript('https://cdn.jsdelivr.net/npm/marked@12/marked.min.js'),
+      LZ.loadScript('https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js'),
+      LZ.loadScript('https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js')
+    ]).then(() => { if (window.marked && marked.setOptions) marked.setOptions({gfm:true, breaks:true}); });
+  }
+  return window.__lzRich;
+}
+function ensureRouteScript(src){
+  if (!src || !window.LZ || !LZ.loadScript) return Promise.resolve();
+  if (!lzSignedIn()) return Promise.resolve();
+  return LZ.loadScript(src).catch(() => {});
+}
+const ROUTE_SCRIPT = { code: '/lokicode.js', benches: '/benches.js' };
 function showView(v){
   state.view = v;
   $('#chatView').classList.toggle('active', v === 'chat' || v === 'lokibot');
@@ -1388,12 +1410,21 @@ function showView(v){
   if (evb) evb.classList.toggle('active', v === 'event');
   document.body.dataset.view = v;
   const h = v === 'chat' ? '' : '#' + v; if (location.hash !== h) history.replaceState(null, '', h || location.pathname + location.search);
-  if (v === 'code' && window.LokiCode) LokiCode.onShow();
-  if (v === 'lokibot' && window.LokiBot) LokiBot.onShow();
-  if (v === 'benches' && window.LokiBenches) LokiBenches.onShow();
-  if (v === 'teamchat' && window.LZTeams) LZTeams.onShow();
-  if (v === 'sharedhub' && window.LZShared) LZShared.onShow();
-  if (v === 'event' && window.LZEvents) LZEvents.onShow();
+  const finish = () => {
+    if (state.view !== v) return;
+    if (v === 'code' && window.LokiCode) LokiCode.onShow();
+    if (v === 'lokibot' && window.LokiBot) LokiBot.onShow();
+    if (v === 'benches' && window.LokiBenches) LokiBenches.onShow();
+    if (v === 'teamchat' && window.LZTeams) LZTeams.onShow();
+    if (v === 'sharedhub' && window.LZShared) LZShared.onShow();
+    if (v === 'event' && window.LZEvents) LZEvents.onShow();
+  };
+  const src = ROUTE_SCRIPT[v];
+  if (src && lzSignedIn() && !(v === 'code' && window.LokiCode) && !(v === 'benches' && window.LokiBenches)){
+    ensureRouteScript(src).then(() => {
+      if (v === 'code') return ensureRichText();
+    }).then(finish);
+  } else finish();
 }
 function closeSidebarMobile(){ document.body.classList.remove('sb-open'); }
 
@@ -1435,6 +1466,10 @@ function renderMessages(){
   const box = $('#messages'); box.innerHTML = '';
   const c = state.current;
   if (!c || !c.messages.length){ renderEmpty(box); return; }
+  if (!window.marked && !window.__lzRichPending){
+    window.__lzRichPending = true;
+    ensureRichText().then(() => { window.__lzRichPending = false; if (state.current === c) renderMessages(); });
+  }
   c.messages.forEach((m, i) => box.appendChild(renderMsg(m, i)));
   box.scrollTop = box.scrollHeight;
 }
@@ -4302,7 +4337,16 @@ function bind(){
   $('#lokiBotBtn') && ($('#lokiBotBtn').onclick = () => { showView(state.view === 'lokibot' ? 'chat' : 'lokibot'); closeSidebarMobile(); });
   $('#benchesBtn') && ($('#benchesBtn').onclick = () => { showView(state.view === 'benches' ? 'chat' : 'benches'); closeSidebarMobile(); });
   $('#communityEventTopBtn') && ($('#communityEventTopBtn').onclick = () => { showView(state.view === 'event' ? 'chat' : 'event'); closeSidebarMobile(); });
-  $('#callBtn').onclick = () => window.Call ? Call.open() : toast('Voice call is loading…');
+  $('#callBtn').onclick = async () => {
+    if (!window.Call && window.LZ){ try { await LZ.loadScript('/call.js'); } catch(_){} }
+    if (window.Call) Call.open(); else toast('Voice call is loading…');
+  };
+  const clBtn = $('#openChangelog');
+  if (clBtn) clBtn.onclick = async () => {
+    if (!window.Changelog && window.LZ){ try { await LZ.loadScript('/changelog.js'); } catch(_){} }
+    if (window.Changelog) Changelog.open();
+    document.body.classList.remove('sb-open');
+  };
   addEventListener('hashchange', () => { const v = location.hash.slice(1); if (['code', 'lokibot', 'benches', 'teamchat', 'sharedhub', 'event'].includes(v)) showView(v); });
   // tactile ripple on buttons (transform/opacity only)
   document.addEventListener('pointerdown', e => {
@@ -4311,7 +4355,7 @@ function bind(){
     const sp = el('span', 'ripple'); sp.style.cssText = `width:${d}px;height:${d}px;left:${e.clientX - r.left - d / 2}px;top:${e.clientY - r.top - d / 2}px`;
     b.appendChild(sp); setTimeout(() => sp.remove(), 650);
   }, {passive:true});
-  $('#openSettings').onclick = () => { renderSettings(); openModal('settings'); closeSidebarMobile(); };
+  $('#openSettings').onclick = () => { if (window.LZRoute) LZRoute.prefetchApps(); renderSettings(); openModal('settings'); closeSidebarMobile(); };
   $('#historySearch').oninput = renderHistory;
   $('#openSidebar').onclick = () => { if (innerWidth <= 820) document.body.classList.add('sb-open'); else document.body.classList.remove('sb-collapsed'); };
   $('#closeSidebar').onclick = () => { if (innerWidth <= 820) closeSidebarMobile(); else document.body.classList.add('sb-collapsed'); };
@@ -4319,7 +4363,7 @@ function bind(){
   $('#modelBtn').onclick = e => { e.stopPropagation(); toggleMenu('model'); };
   $('#thinkBtn') && ($('#thinkBtn').onclick = e => { e.stopPropagation(); toggleMenu('think'); });
   $('#labsBtn') && ($('#labsBtn').onclick = e => { e.stopPropagation(); toggleMenu('labs'); });
-  $('#plusBtn').onclick = e => { e.stopPropagation(); toggleMenu('plus'); };
+  $('#plusBtn').onclick = e => { e.stopPropagation(); toggleMenu('plus'); if (window.LZRoute) LZRoute.prefetchApps(); };
   document.addEventListener('click', e => {
     if (!e.target.closest('.model-menu,.labs-menu,.plus-menu,.think-menu')) toggleMenu(null);
     if (!e.target.closest('#slashMenu,#prompt')) { const sm = $('#slashMenu'); if (sm) sm.hidden = true; }
@@ -4524,6 +4568,116 @@ function importSharedConversation(sharedConv){
   toast(`✓ Opened "${copy.title}"`, 'ok');
 }
 
+registerSettings({
+  id: 'appearance11',
+  title: 'Appearance',
+  icon: '🎨',
+  sub: 'Themes, accent colors & font size',
+  render(root){
+    const themes = [
+      { id: 'emerald', name: 'Emerald Night', accent: '#00ff9c', blurb: 'Lokizenith default' },
+      { id: 'midnight', name: 'Midnight', accent: '#8eb4ff', blurb: 'Cooler contrast' },
+      { id: 'aurora', name: 'Aurora', accent: '#5eead4', blurb: 'Soft teal glow' }
+    ];
+    const accents = ['#00ff9c', '#5eead4', '#8eb4ff', '#c4b5fd', '#f9a8d4', '#fbbf24'];
+    const paint = () => {
+      root.innerHTML = `<h3>Appearance</h3>
+        <p style="color:var(--muted);font-size:.84rem;margin:0 0 12px">Choose a theme, an accent, and a reading size. The rest of the app keeps its layout.</p>
+        <div class="set-row col"><div class="lbl"><b>Theme</b><small>Applied only when you pick one</small></div>
+          <div class="set-theme-grid">${themes.map(th => `<button type="button" class="set-theme-card ${ (S.uiTheme || 'emerald') === th.id ? 'on' : '' }" data-theme="${th.id}">
+            <div class="set-theme-sw" style="background:linear-gradient(135deg,${th.accent},#07110d)"></div>
+            <b>${th.name}</b><small style="display:block;color:var(--muted)">${th.blurb}</small>
+          </button>`).join('')}</div>
+        </div>
+        <div class="set-row"><div class="lbl"><b>Accent color</b><small>Buttons, glows, and your name</small></div>
+          <div class="swatches">${accents.map(c => `<button class="swatch ${S.accent === c ? 'on' : ''}" style="background:${c}" data-acc="${c}"></button>`).join('')}</div>
+        </div>
+        <div class="set-row"><div class="lbl"><b>Font size</b><small id="setFontLbl">${S.fontSize}px</small></div>
+          <input type="range" min="13" max="20" step="1" id="setFontRange" value="${S.fontSize}">
+        </div>
+        <div class="set-font-preview" id="setFontPreview" style="font-size:${S.fontSize}px">Lokizenith stays comfortable at this size. The quick brown fox jumps.</div>`;
+      root.querySelectorAll('[data-theme]').forEach(btn => btn.onclick = () => {
+        const th = themes.find(t => t.id === btn.dataset.theme);
+        S.uiTheme = th.id;
+        S.accent = th.accent;
+        saveSettings(); applySettings(); paint();
+      });
+      root.querySelectorAll('[data-acc]').forEach(btn => btn.onclick = () => {
+        S.accent = btn.dataset.acc;
+        saveSettings(); applySettings(); paint();
+      });
+      const range = root.querySelector('#setFontRange');
+      range.oninput = () => {
+        S.fontSize = +range.value;
+        root.querySelector('#setFontLbl').textContent = S.fontSize + 'px';
+        root.querySelector('#setFontPreview').style.fontSize = S.fontSize + 'px';
+        saveSettings(); applySettings();
+      };
+    };
+    paint();
+  }
+});
+registerSettings({
+  id: 'privacy12',
+  title: 'Data & Privacy',
+  icon: '🔒',
+  sub: 'Export data & sign out other devices',
+  render(root){
+    const user = window.LZAuth && LZAuth.getUser ? LZAuth.getUser() : null;
+    root.innerHTML = `<h3>Data &amp; Privacy</h3>
+      <p style="color:var(--muted);font-size:.84rem;margin:0 0 12px">Download a copy of what this browser and your account hold, or sign every other session out. This device stays signed in.</p>
+      <div class="set-row"><div class="lbl"><b>Export my data</b><small>Chats, settings, and profile as JSON</small></div>
+        <button class="btn-ghost" id="setPrivacyExport" type="button">Download export</button>
+      </div>
+      <div class="set-row"><div class="lbl"><b>Log out other devices</b><small id="setSessionHint">Other sessions on this account</small></div>
+        <button class="btn-primary" id="setLogoutOthers" type="button">Log out other devices</button>
+      </div>
+      <div class="set-row col"><div class="lbl"><b>What is included</b><small>Username ${user ? '@' + esc(user.username || '') : '(sign in to export a profile)'}, plan, chats on this account, and settings. Passwords are never exported. Team Chat messages stay on the server for the other members of those rooms.</small></div></div>`;
+    root.querySelector('#setPrivacyExport').onclick = () => {
+      const u = window.LZAuth && LZAuth.getUser ? LZAuth.getUser() : null;
+      const safeUser = u ? { id: u.id, username: u.username, displayName: u.displayName, plan: u.plan || u.effectivePlan, createdAt: u.createdAt } : null;
+      download(JSON.stringify({ exportedAt: new Date().toISOString(), app: 'Lokizenith AI', profile: safeUser, settings: S, chats: state.convs }, null, 2), 'lokizenith-data-export.json', 'application/json');
+      toast('Export downloaded');
+    };
+    const hint = root.querySelector('#setSessionHint');
+    const token = localStorage.getItem('lz.authToken') || '';
+    if (token){
+      fetch('/api/auth/sessions', { headers: { 'x-lz-token': token } }).then(r => r.json()).then(j => {
+        if (hint && j && typeof j.others === 'number') hint.textContent = j.others === 0 ? 'No other devices are signed in' : j.others + ' other session' + (j.others === 1 ? '' : 's') + ' signed in';
+      }).catch(() => {});
+    }
+    root.querySelector('#setLogoutOthers').onclick = async () => {
+      if (!token){ toast('Sign in first', 'err'); return; }
+      if (!confirm('Sign out every other device? This browser stays signed in.')) return;
+      try {
+        const r = await fetch('/api/auth/logout-others', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lz-token': token } });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || 'Could not sign out other devices');
+        toast(j.revokedCount ? 'Signed out ' + j.revokedCount + ' other session' + (j.revokedCount === 1 ? '' : 's') : 'No other devices were signed in');
+        if (hint) hint.textContent = 'No other devices are signed in';
+      } catch(err){ toast(err.message || 'Could not sign out other devices', 'err'); }
+    };
+  }
+});
+window.LZRoute = {
+  hydrate(){
+    const v = document.body.dataset.view || 'chat';
+    if (!lzSignedIn()) return;
+    if (v === 'code') ensureRouteScript('/lokicode.js').then(() => ensureRichText()).then(() => { if (window.LokiCode) LokiCode.onShow(); });
+    if (v === 'benches') ensureRouteScript('/benches.js').then(() => { if (window.LokiBenches) LokiBenches.onShow(); });
+    this.prefetchApps();
+  },
+  prefetchApps(){
+    if (!lzSignedIn() || !window.LZ || window.__lzPrefetch) return;
+    window.__lzPrefetch = true;
+    const run = () => {
+      ['/features.js', '/tools.js', '/places.js', '/design.js', '/changelog.js', '/call.js']
+        .reduce((p, s) => p.then(() => LZ.loadScript(s).catch(() => {})), Promise.resolve());
+    };
+    if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 1800 });
+    else setTimeout(run, 600);
+  }
+};
 async function init(){
   applySettings(); bind();
   setModel(MODELS[state.model] ? state.model : 'fera', true);

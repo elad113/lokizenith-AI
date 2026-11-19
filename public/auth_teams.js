@@ -752,11 +752,53 @@ function renderAuthInviteBanner(){
   }
 }
 
+function syncAuthFieldCopy(){
+  const login = state.authMode !== 'register';
+  const userInp = $('#authUsername');
+  const pw = $('#authPassword');
+  if (userInp) userInp.placeholder = login ? 'Your username' : 'Choose a unique username';
+  if (pw){
+    pw.placeholder = login ? 'Your password' : 'At least 8 characters';
+    pw.minLength = login ? 1 : 8;
+    pw.setAttribute('minlength', login ? '1' : '8');
+    pw.setAttribute('autocomplete', login ? 'current-password' : 'new-password');
+  }
+  const legal = $('#authLegalNote');
+  if (legal) legal.hidden = login;
+}
+
+function lockAuthScroll(){
+  document.documentElement.classList.add('lz-auth-lock');
+  document.body.classList.add('lz-auth-lock');
+  const code = $('#codeView');
+  if (code) code.scrollTop = 0;
+  const ov = $('#authOverlay');
+  if (ov && !ov.dataset.scrollLock){
+    ov.dataset.scrollLock = '1';
+    ov.addEventListener('wheel', (e) => {
+      if (!document.body.classList.contains('lz-auth-lock')) return;
+      if (e.target.closest && e.target.closest('.lz-auth-card')) return;
+      e.preventDefault();
+    }, { passive: false });
+    ov.addEventListener('touchmove', (e) => {
+      if (!document.body.classList.contains('lz-auth-lock')) return;
+      if (e.target.closest && e.target.closest('.lz-auth-card')) return;
+      e.preventDefault();
+    }, { passive: false });
+  }
+}
+
+function unlockAuthScroll(){
+  document.documentElement.classList.remove('lz-auth-lock');
+  document.body.classList.remove('lz-auth-lock');
+}
+
 function openAuthOverlay(mode = 'login'){
   const ov = $('#authOverlay');
   if (!ov) return;
   state.authMode = mode === 'register' ? 'register' : 'login';
   ov.hidden = false;
+  lockAuthScroll();
   $('#authTabLogin')?.classList.toggle('on', state.authMode === 'login');
   $('#authTabRegister')?.classList.toggle('on', state.authMode === 'register');
   $('#authTabLogin')?.setAttribute('aria-selected', String(state.authMode === 'login'));
@@ -765,8 +807,7 @@ function openAuthOverlay(mode = 'login'){
   if (sub) sub.textContent = state.authMode === 'login' ? 'Log In' : 'Create Account';
   const gText = $('#googleAuthBtnText');
   if (gText) gText.textContent = state.authMode === 'login' ? 'Continue with Google' : 'Sign up with Google';
-  const pw = $('#authPassword');
-  if (pw) pw.setAttribute('autocomplete', state.authMode === 'login' ? 'current-password' : 'new-password');
+  syncAuthFieldCopy();
   const invField = $('#authInviteField');
   const invInp = $('#authInviteInput');
   if (invField) invField.hidden = state.authMode !== 'register';
@@ -780,6 +821,8 @@ function openAuthOverlay(mode = 'login'){
 function hideAuthOverlay(){
   const ov = $('#authOverlay');
   if (ov) ov.hidden = true;
+  unlockAuthScroll();
+  if (window.LZRoute && typeof LZRoute.hydrate === 'function') LZRoute.hydrate();
 }
 
 /* ---------------- Google OAuth Popup Flow (Firebase Auth Popup + Server Token Verification) ---------------- */
@@ -1858,9 +1901,11 @@ function connectWS(){
           room.messages.push(msg.message);
           room.updatedAt = msg.updatedAt || Date.now();
           if (state.typingMap[room.id]) delete state.typingMap[room.id][msg.message.username];
+          if (Array.isArray(msg.activity)) room.activity = msg.activity;
           if ($('#teamChatView')?.classList.contains('active') && state.activeTeamChatId === room.id){
             appendTeamChatMessage(msg.message);
             renderTypingIndicator();
+            renderActivityFeed();
           } else {
             updateTeamChatBadge(true);
             if (msg.message.username !== state.user?.username){
@@ -1880,6 +1925,29 @@ function connectWS(){
       } else if (msg.error){
         toast(msg.error, 'err');
       }
+    } else if (msg.type === 'session:revoked'){
+      toast('Signed out on this device.', 'err');
+      logout();
+    } else if (msg.type === 'teamchat:message_updated' && msg.message){
+      const room = state.teamChats.find(c => c.id === msg.chatId);
+      if (room){
+        const idx = room.messages.findIndex(m => m.id === msg.message.id);
+        if (idx >= 0) room.messages[idx] = msg.message;
+        if (Array.isArray(msg.activity)) room.activity = msg.activity;
+        if ($('#teamChatView')?.classList.contains('active') && state.activeTeamChatId === room.id){
+          rerenderTeamFeed();
+          renderActivityFeed();
+          renderThreadPanel();
+        }
+      }
+    } else if (msg.type === 'teamchat:activity' && msg.chatId){
+      const room = state.teamChats.find(c => c.id === msg.chatId);
+      if (room && Array.isArray(msg.activity)){
+        room.activity = msg.activity;
+        if ($('#teamChatView')?.classList.contains('active') && state.activeTeamChatId === room.id) renderActivityFeed();
+      }
+    } else if (msg.type === 'teamcall:signal'){
+      handleTeamCallSignal(msg);
     } else if (msg.type === 'teamchat:typing'){
       if (!state.typingMap[msg.chatId]) state.typingMap[msg.chatId] = {};
       if (msg.typing) state.typingMap[msg.chatId][msg.username] = Date.now();
@@ -6385,9 +6453,14 @@ async function openUserProfileModal(username, previewOverride = null){
   const isMe = state.user && String(state.user.username || '').toLowerCase() === String(prof.username || '').toLowerCase();
   const badges = (prof.profileBadges || []).map(id => PROFILE_BADGE_CATALOG.find(b => b.id === id)).filter(Boolean);
   const profPlan = String(prof.plan || prof.effectivePlan || prof.planTier || 'free').toLowerCase();
+  const stats = prof.stats || {};
+  const memberDays = prof.createdAt ? Math.max(1, Math.round((Date.now() - Number(prof.createdAt)) / 86400000)) : null;
+  const hoursActive = stats.hoursActive != null ? stats.hoursActive : Math.round(Number(prof.totalTimeSeconds || 0) / 3600);
+  const teamMessages = stats.teamMessages != null ? stats.teamMessages : 0;
+  const badgeCount = stats.badgeCount != null ? stats.badgeCount : badges.length;
 
   body.innerHTML = `
-    <div class="lz-pub-card bg-${esc(prof.profileBg || 'nebula')} ov-${esc(prof.profileOverlay || 'sparks')}" style="--prof-acc:${esc(prof.profileAccent || '#00ff9c')}">
+    <div class="lz-pub-card lz-profile-v2 bg-${esc(prof.profileBg || 'nebula')} ov-${esc(prof.profileOverlay || 'sparks')}" style="--prof-acc:${esc(prof.profileAccent || '#00ff9c')}">
       <div class="lz-pub-banner">
         ${bannerVideo
           ? `<video src="${esc(bannerVideo)}" class="lz-pub-banner-img lz-pub-banner-video" autoplay muted loop playsinline></video>`
@@ -6422,11 +6495,18 @@ async function openUserProfileModal(username, previewOverride = null){
           </div>
         </div>
 
+        <div class="lz-stat-grid">
+          <div class="lz-stat"><b>${memberDays == null ? '—' : memberDays}</b><small>Days here</small></div>
+          <div class="lz-stat"><b>${hoursActive}</b><small>Hours active</small></div>
+          <div class="lz-stat"><b>${teamMessages}</b><small>Team messages</small></div>
+          <div class="lz-stat"><b>${badgeCount}</b><small>Badges</small></div>
+        </div>
+
         ${badges.length ? `
           <div class="lz-pub-badges">
-            ${badges.map(b => `<span class="lz-pub-badge">${b.label}</span>`).join('')}
+            ${badges.map(b => `<span class="lz-pub-badge" title="${esc(b.label)}">${b.label}</span>`).join('')}
           </div>
-        ` : ''}
+        ` : `<div class="lz-pub-badges"><span class="lz-pub-badge">No badges yet</span></div>`}
 
         <div class="lz-pub-section">
           <h4>ABOUT ME</h4>
@@ -6469,6 +6549,7 @@ let tcVoiceDurationSec = 0;
 let tcVoiceWaveformSamples = [];
 let tcMentionIndex = 0;
 let tcMentionCandidates = [];
+let sendTeamChatFromComposer = async () => {};
 
 // Active Group Voice Call State
 const teamCallState = {
@@ -6486,8 +6567,156 @@ const teamCallState = {
   screenShareActive: false,
   screenStream: null,
   screenFrameTimer: 0,
-  remoteScreenFrames: {}
+  remoteScreenFrames: {},
+  peers: new Map(),
+  remoteAnalysers: new Map()
 };
+
+const TEAM_CALL_ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+function closeTeamCallPeers(){
+  teamCallState.peers.forEach(rec => {
+    try { rec.pc.close(); } catch(_){}
+    try { rec.audio.pause(); rec.audio.srcObject = null; } catch(_){}
+  });
+  teamCallState.peers.clear();
+  teamCallState.remoteAnalysers.clear();
+}
+
+function watchRemoteAudio(userId, stream){
+  const ctx = getAudioCtx();
+  if (!ctx || !stream) return;
+  try {
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    src.connect(analyser);
+    teamCallState.remoteAnalysers.set(userId, analyser);
+  } catch(_){}
+}
+
+function levelFromAnalyser(analyser){
+  if (!analyser) return 0;
+  const arr = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(arr);
+  let sum = 0;
+  for (let i = 0; i < arr.length; i++) sum += arr[i];
+  return Math.min(1, (sum / Math.max(1, arr.length)) / 65);
+}
+
+async function flushIce(rec){
+  if (!rec.pc.remoteDescription || !rec.pendingIce.length) return;
+  const queued = rec.pendingIce.splice(0);
+  for (const c of queued){
+    try { await rec.pc.addIceCandidate(c); } catch(_){}
+  }
+}
+
+function ensureCallPeer(remoteUserId){
+  if (!remoteUserId || remoteUserId === state.user?.id) return null;
+  if (teamCallState.peers.has(remoteUserId)) return teamCallState.peers.get(remoteUserId);
+  const pc = new RTCPeerConnection(TEAM_CALL_ICE);
+  const audio = new Audio();
+  audio.autoplay = true;
+  const rec = { pc, audio, pendingIce: [], offered: false };
+  teamCallState.peers.set(remoteUserId, rec);
+  const stream = teamCallState.localStream;
+  if (stream) stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
+  else pc.addTransceiver('audio', { direction: 'recvonly' });
+  pc.onicecandidate = ev => {
+    if (!ev.candidate || !teamCallState.activeChatId) return;
+    sendWS({
+      type: 'teamcall:signal',
+      chatId: teamCallState.activeChatId,
+      toUserId: remoteUserId,
+      signal: { kind: 'ice', candidate: ev.candidate }
+    });
+  };
+  pc.ontrack = ev => {
+    const remote = ev.streams && ev.streams[0];
+    if (!remote) return;
+    audio.srcObject = remote;
+    audio.muted = teamCallState.locallyMutedUsers.has(remoteUserId);
+    audio.play().catch(() => {});
+    watchRemoteAudio(remoteUserId, remote);
+  };
+  return rec;
+}
+
+async function offerCallTo(remoteUserId){
+  const rec = ensureCallPeer(remoteUserId);
+  if (!rec || rec.offered || rec.pc.signalingState !== 'stable') return;
+  try {
+    const offer = await rec.pc.createOffer();
+    await rec.pc.setLocalDescription(offer);
+    rec.offered = true;
+    sendWS({
+      type: 'teamcall:signal',
+      chatId: teamCallState.activeChatId,
+      toUserId: remoteUserId,
+      signal: { kind: 'offer', sdp: rec.pc.localDescription }
+    });
+  } catch(_){
+    rec.offered = false;
+  }
+}
+
+function syncCallPeers(call){
+  if (!teamCallState.inCall || !call || call.chatId !== teamCallState.activeChatId) return;
+  const people = Array.isArray(call.participants) ? call.participants : [];
+  const ids = new Set(people.map(p => p.userId));
+  teamCallState.peers.forEach((rec, id) => {
+    if (!ids.has(id)){
+      try { rec.pc.close(); } catch(_){}
+      teamCallState.peers.delete(id);
+      teamCallState.remoteAnalysers.delete(id);
+    }
+  });
+  const me = people.find(p => p.userId === state.user?.id);
+  if (!me) return;
+  people.forEach(p => {
+    if (p.userId === me.userId) return;
+    const later = (p.joinedAt || 0) < (me.joinedAt || 0) || ((p.joinedAt || 0) === (me.joinedAt || 0) && String(me.userId) > String(p.userId));
+    if (later) offerCallTo(p.userId).catch(() => {});
+    else ensureCallPeer(p.userId);
+  });
+}
+
+async function handleTeamCallSignal(msg){
+  if (!msg || msg.toUserId && msg.toUserId !== state.user?.id) return;
+  if (!teamCallState.inCall || teamCallState.activeChatId !== msg.chatId) return;
+  const from = msg.fromUserId;
+  const sig = msg.signal || {};
+  const rec = ensureCallPeer(from);
+  if (!rec) return;
+  try {
+    if (sig.kind === 'offer' && sig.sdp){
+      const polite = String(state.user.id) > String(from);
+      if (rec.pc.signalingState !== 'stable'){
+        if (!polite) return;
+        await rec.pc.setLocalDescription({ type: 'rollback' });
+      }
+      await rec.pc.setRemoteDescription(sig.sdp);
+      await flushIce(rec);
+      const answer = await rec.pc.createAnswer();
+      await rec.pc.setLocalDescription(answer);
+      sendWS({
+        type: 'teamcall:signal',
+        chatId: msg.chatId,
+        toUserId: from,
+        signal: { kind: 'answer', sdp: rec.pc.localDescription }
+      });
+    } else if (sig.kind === 'answer' && sig.sdp){
+      if (rec.pc.signalingState === 'have-local-offer'){
+        await rec.pc.setRemoteDescription(sig.sdp);
+        await flushIce(rec);
+      }
+    } else if (sig.kind === 'ice' && sig.candidate){
+      if (rec.pc.remoteDescription) await rec.pc.addIceCandidate(sig.candidate);
+      else rec.pendingIce.push(sig.candidate);
+    }
+  } catch(_){}
+}
 
 function playMentionNotificationSound(){
   try {
@@ -6609,16 +6838,88 @@ function renderTypingIndicator(){
   const el = $('#tcTyping');
   if (!el) return;
   const room = state.teamChats.find(c => c.id === state.activeTeamChatId);
-  if (!room){ el.textContent = ''; return; }
+  if (!room){ el.innerHTML = ''; return; }
   const now = Date.now();
   const map = state.typingMap[room.id] || {};
   const active = Object.keys(map).filter(u => u !== state.user?.username && now - map[u] < 5000);
   if (!active.length){
-    el.textContent = '';
+    el.innerHTML = '';
     return;
   }
   const names = active.map(u => getRoomMemberProfile(room, u)?.displayName || u);
-  el.textContent = `${names.join(', ')} typing…`;
+  el.innerHTML = `<span class="tc-typing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>${esc(names.join(', '))} ${active.length > 1 ? 'are' : 'is'} typing</span>`;
+}
+
+const TC_EMOJIS = ['👍', '❤️', '😂', '🎉', '🔥', '✅', '👀'];
+let tcOpenThreadId = null;
+let tcActivityOpen = false;
+let tcEmojiFor = null;
+
+function roomActivityItems(room){
+  if (!room) return [];
+  if (Array.isArray(room.activity) && room.activity.length) return room.activity;
+  return (room.messages || []).slice(-12).reverse().map(m => ({
+    id: 'd_' + m.id,
+    kind: m.role === 'assistant' ? 'ai' : 'message',
+    text: `${m.displayName || m.username} ${m.role === 'assistant' ? 'replied in the room' : 'sent a message'}`,
+    ts: m.ts
+  }));
+}
+
+function renderPinnedBar(){
+  const bar = $('#tcPinnedBar');
+  const room = state.teamChats.find(c => c.id === state.activeTeamChatId);
+  if (!bar || !room) return;
+  const pinned = (room.messages || []).filter(m => m.pinned && !m.threadParentId);
+  if (!pinned.length){ bar.hidden = true; bar.innerHTML = ''; return; }
+  const top = pinned[pinned.length - 1];
+  bar.hidden = false;
+  bar.innerHTML = `<span>📌 Pinned</span><button type="button" data-jump-pin="${esc(top.id)}">${esc(String(top.content || 'Attachment').slice(0, 80))}</button><small>${pinned.length}</small>`;
+  bar.querySelector('[data-jump-pin]')?.addEventListener('click', () => {
+    const node = document.querySelector(`.tc-msg[data-mid="${CSS.escape(top.id)}"]`);
+    if (node) node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+}
+
+function renderActivityFeed(){
+  const panel = $('#tcActivity');
+  if (!panel) return;
+  const room = state.teamChats.find(c => c.id === state.activeTeamChatId);
+  panel.hidden = !tcActivityOpen;
+  if (!tcActivityOpen || !room) return;
+  const items = roomActivityItems(room);
+  panel.innerHTML = `<div class="tc-drawer-head"><b>Team activity</b><button type="button" class="icon-btn" id="tcActivityClose">✕</button></div>
+    <div class="tc-drawer-body">${items.length ? items.map(a => `<div class="tc-activity-item"><span>${esc(a.text || '')}</span><small>${a.ts ? fmtTime(a.ts) : ''}${a.kind ? ' · ' + esc(a.kind) : ''}</small></div>`).join('') : '<div class="tc-empty-list">No activity yet.</div>'}</div>`;
+  $('#tcActivityClose', panel).onclick = () => { tcActivityOpen = false; panel.hidden = true; };
+}
+
+function renderThreadPanel(){
+  const panel = $('#tcThread');
+  if (!panel) return;
+  const room = state.teamChats.find(c => c.id === state.activeTeamChatId);
+  if (!tcOpenThreadId || !room){ panel.hidden = true; panel.innerHTML = ''; return; }
+  const parent = (room.messages || []).find(m => m.id === tcOpenThreadId);
+  if (!parent){ tcOpenThreadId = null; panel.hidden = true; return; }
+  const replies = (room.messages || []).filter(m => m.threadParentId === parent.id);
+  panel.hidden = false;
+  panel.innerHTML = `<div class="tc-drawer-head"><b>Thread</b><button type="button" class="icon-btn" id="tcThreadClose">✕</button></div>
+    <div class="tc-drawer-body" id="tcThreadBody"></div>
+    <form class="tc-thread-compose" id="tcThreadForm">
+      <input id="tcThreadInput" placeholder="Reply in thread… @Loki asks the AI" autocomplete="off">
+      <button class="btn-primary" type="submit">Reply</button>
+    </form>`;
+  const body = $('#tcThreadBody', panel);
+  body.appendChild(renderTeamChatMessageEl(parent, null, { inThread: true }));
+  let prev = parent;
+  replies.forEach(m => { body.appendChild(renderTeamChatMessageEl(m, prev, { inThread: true })); prev = m; });
+  $('#tcThreadClose', panel).onclick = () => { tcOpenThreadId = null; panel.hidden = true; };
+  $('#tcThreadForm', panel).onsubmit = e => {
+    e.preventDefault();
+    const input = $('#tcThreadInput', panel);
+    const text = input?.value || '';
+    if (input) input.value = '';
+    sendTeamChatFromComposer({ content: text, parentId: parent.id });
+  };
 }
 
 function fmtVoiceSec(sec){
@@ -6630,7 +6931,7 @@ function fmtVoiceSec(sec){
 
 function highlightMentionsHtml(escapedHtml){
   return String(escapedHtml || '').replace(/(^|\s)(@[A-Za-z0-9_.\u0590-\u05FF-]+)/g, (m, pre, tag) => {
-    const isAi = /^@(ai|lokizenith)$/i.test(tag);
+    const isAi = /^@(ai|lokizenith|loki)$/i.test(tag);
     return `${pre}<span class="tc-mention-chip ${isAi ? 'ai' : 'user'}">${tag}</span>`;
   });
 }
@@ -6730,21 +7031,23 @@ function buildVoiceMessagePillEl(v){
   return wrap;
 }
 
-function renderTeamChatMessageEl(m){
+function renderTeamChatMessageEl(m, prev, opts = {}){
   const room = state.teamChats.find(c => c.id === state.activeTeamChatId);
   const row = document.createElement('div');
   const mine = m.username === state.user?.username;
   const isAi = m.role === 'assistant';
-  row.className = `tc-msg ${mine ? 'mine' : ''} ${isAi ? 'ai' : ''}`;
+  const grouped = !!(prev && prev.username === m.username && prev.role === m.role && Math.abs((m.ts || 0) - (prev.ts || 0)) < 5 * 60 * 1000);
+  row.className = `tc-msg ${mine ? 'mine' : ''} ${isAi ? 'ai' : ''} ${grouped ? 'grouped' : ''} ${m.pinned ? 'pinned' : ''}`;
   row.dataset.mid = m.id;
 
   const mp = isAi ? null : getRoomMemberProfile(room, m.username);
-  const dispName = isAi ? '⚡ Lokizenith AI' : (m.displayName || mp?.displayName || m.username);
+  const dispName = isAi ? 'Loki' : (m.displayName || mp?.displayName || m.username);
   const avatarUrl = isAi ? '' : (m.avatarUrl || mp?.avatarUrl || mp?.googlePicture || '');
   const initial = String(dispName || 'U').trim().charAt(0).toUpperCase();
+  const replies = opts.inThread ? 0 : (room?.messages || []).filter(x => x.threadParentId === m.id).length;
 
   let bodyHtml = '';
-  if (m.content){
+  if (m.content && m.content !== '🎤 Voice Message'){
     if (isAi && A()?.mdToHtml){
       bodyHtml = A().mdToHtml(m.content);
     } else {
@@ -6755,7 +7058,7 @@ function renderTeamChatMessageEl(m){
   const attachments = Array.isArray(m.attachments) ? m.attachments : [];
   const attHtml = attachments.length ? `
     <div class="tc-msg-attachments">
-      ${attachments.map(a => a.kind === 'image' && a.dataUrl
+      ${attachments.map(a => (a.kind === 'image' || a.isImage) && a.dataUrl
         ? `<div class="tc-att-img-wrap"><img src="${esc(a.dataUrl)}" alt="${esc(a.name)}" class="tc-att-img"></div>`
         : `<a href="${esc(a.dataUrl || '#')}" download="${esc(a.name || 'file')}" class="tc-att-file-card">
              <span class="tc-att-ic">📄</span>
@@ -6765,23 +7068,35 @@ function renderTeamChatMessageEl(m){
     </div>
   ` : '';
 
+  const reactions = m.reactions && typeof m.reactions === 'object' ? m.reactions : {};
+  const reactHtml = Object.keys(reactions).filter(k => (reactions[k] || []).length).map(k => {
+    const mineReact = (reactions[k] || []).includes(state.user?.username);
+    return `<button type="button" class="tc-react-chip ${mineReact ? 'on' : ''}" data-emoji="${esc(k)}" data-mid="${esc(m.id)}">${k} ${(reactions[k] || []).length}</button>`;
+  }).join('');
+
   row.innerHTML = `
     <div class="tc-msg-head-row">
-      <div class="tc-msg-author-trigger ${isAi ? '' : 'clickable'}" ${isAi ? '' : `data-prof-u="${esc(m.username)}" title="Click to view ${esc(dispName)}'s profile"`}>
+      <div class="tc-msg-author-trigger ${isAi ? '' : 'clickable'}" ${isAi ? '' : `data-prof-u="${esc(m.username)}" title="View profile"`}>
         ${isAi
           ? `<span class="tc-msg-av ai-av">⚡</span>`
           : avatarUrl
           ? `<img src="${esc(avatarUrl)}" alt="${esc(dispName)}" class="tc-msg-av-img" referrerpolicy="no-referrer">`
           : `<span class="tc-msg-av">${esc(initial)}</span>`}
         <span class="tc-msg-author">${esc(dispName)}</span>
-        ${!isAi && dispName !== m.username ? `<small class="tc-msg-handle">@${esc(m.username)}</small>` : ''}
+        ${isAi ? `<small class="tc-msg-handle">AI</small>` : (!isAi && dispName !== m.username ? `<small class="tc-msg-handle">@${esc(m.username)}</small>` : '')}
       </div>
-      <span class="tc-msg-time">${fmtTime(m.ts)}</span>
+      <span class="tc-msg-time">${m.pinned ? '📌 ' : ''}${fmtTime(m.ts)}</span>
     </div>
     <div class="tc-msg-bubble" dir="auto">
       ${bodyHtml ? `<div class="tc-msg-text">${bodyHtml}</div>` : ''}
       ${attHtml}
       <div class="tc-msg-voice-slot"></div>
+      ${reactHtml ? `<div class="tc-react-row">${reactHtml}</div>` : ''}
+      <div class="tc-msg-actions">
+        <button type="button" class="tc-act" data-pick-emoji="${esc(m.id)}">☺ React</button>
+        ${opts.inThread ? '' : `<button type="button" class="tc-act" data-open-thread="${esc(m.id)}">${replies ? replies + ' replies' : 'Thread'}</button>`}
+        <button type="button" class="tc-act" data-pin-msg="${esc(m.id)}">${m.pinned ? 'Unpin' : 'Pin'}</button>
+      </div>
     </div>
   `;
 
@@ -6801,14 +7116,58 @@ function renderTeamChatMessageEl(m){
     };
   });
 
+  row.querySelectorAll('[data-emoji]').forEach(btn => {
+    btn.onclick = e => { e.stopPropagation(); sendTeamChatAction('react', { messageId: m.id, emoji: btn.dataset.emoji }); };
+  });
+  const pick = row.querySelector('[data-pick-emoji]');
+  if (pick) pick.onclick = e => {
+    e.stopPropagation();
+    const pop = document.createElement('div');
+    pop.className = 'tc-emoji-pop';
+    pop.innerHTML = TC_EMOJIS.map(em => `<button type="button" data-em="${em}">${em}</button>`).join('');
+    pick.parentElement.style.position = 'relative';
+    pick.parentElement.appendChild(pop);
+    pop.onclick = ev => {
+      const b = ev.target.closest('[data-em]');
+      if (!b) return;
+      sendTeamChatAction('react', { messageId: m.id, emoji: b.dataset.em });
+      pop.remove();
+    };
+    setTimeout(() => document.addEventListener('click', () => pop.remove(), { once: true }), 0);
+  };
+  const threadBtn = row.querySelector('[data-open-thread]');
+  if (threadBtn) threadBtn.onclick = e => { e.stopPropagation(); tcOpenThreadId = m.id; tcActivityOpen = false; renderThreadPanel(); renderActivityFeed(); };
+  const pinBtn = row.querySelector('[data-pin-msg]');
+  if (pinBtn) pinBtn.onclick = e => { e.stopPropagation(); sendTeamChatAction('pin', { messageId: m.id, pinned: !m.pinned }); };
+
   return row;
 }
 
-function appendTeamChatMessage(m){
+function sendTeamChatAction(kind, extra){
+  const room = state.teamChats.find(c => c.id === state.activeTeamChatId);
+  if (!room) return;
+  sendWS({ type: kind === 'pin' ? 'teamchat:pin' : 'teamchat:react', chatId: room.id, ...extra });
+}
+
+function rerenderTeamFeed(){
   const feed = $('#tcMessages');
-  if (!feed) return;
-  feed.appendChild(renderTeamChatMessageEl(m));
-  feed.scrollTop = feed.scrollHeight;
+  const room = state.teamChats.find(c => c.id === state.activeTeamChatId);
+  if (!feed || !room) return;
+  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120;
+  feed.innerHTML = '';
+  let prev = null;
+  (room.messages || []).forEach(m => {
+    if (m.threadParentId) return;
+    feed.appendChild(renderTeamChatMessageEl(m, prev));
+    prev = m;
+  });
+  if (nearBottom) feed.scrollTop = feed.scrollHeight;
+  renderPinnedBar();
+}
+
+function appendTeamChatMessage(){
+  rerenderTeamFeed();
+  renderThreadPanel();
 }
 
 function renderTeamChatHeaderAndMembers(){
@@ -6995,6 +7354,7 @@ function handleTeamCallStateUpdate(call){
   }
   renderTeamChatRoomList();
   if (teamCallState.inCall && teamCallState.activeChatId === call.chatId){
+    syncCallPeers(call);
     renderActiveTeamCallStage();
   }
 }
@@ -7106,6 +7466,11 @@ async function startOrJoinTeamVoiceCall(chatId, isStarter = false){
     }
     teamCallState.volumeMap[state.user.id] = vol;
     updateCallTileVolumeDOM(state.user.id, vol);
+    teamCallState.remoteAnalysers.forEach((analyser, uid) => {
+      const rv = levelFromAnalyser(analyser);
+      teamCallState.volumeMap[uid] = rv;
+      updateCallTileVolumeDOM(uid, rv);
+    });
     if (vol > 0.05){
       sendWS({ type: 'teamcall:volume', chatId: teamCallState.activeChatId, volume: vol });
     }
@@ -7152,6 +7517,7 @@ function leaveTeamVoiceCall(){
 
 function cleanupLocalTeamCallMedia(){
   stopLocalScreenShare(false);
+  closeTeamCallPeers();
   clearInterval(teamCallState.volLoopTimer);
   if (teamCallState.localStream){
     try { teamCallState.localStream.getTracks().forEach(t => t.stop()); } catch(_){}
@@ -7302,15 +7668,12 @@ function renderActiveTeamCallStage(){
       <div class="tc-call-stage-head">
         <div class="tc-call-stage-title">
           <span class="tc-live-call-dot"></span>
-          <b>🔊 Live Group Voice Call — ${esc(room?.name || 'Team Room')}</b>
-          <span class="tc-call-pcount">${participants.length} in call</span>
+          <b>Voice room — ${esc(room?.name || 'Team')}</b>
+          <span class="tc-call-pcount">${participants.length} here · live audio</span>
         </div>
         <div class="tc-call-stage-controls">
           <button type="button" class="btn-ghost tc-call-ctl-btn ${teamCallState.localMicMuted ? 'muted' : ''}" id="tcToggleLocalMicBtn">
-            ${teamCallState.localMicMuted ? '🔇 Unmute My Mic' : '🎙 Mute My Mic'}
-          </button>
-          <button type="button" class="btn-ghost tc-call-ctl-btn" id="tcSimSpeakBtn" title="Test volume-reactive avatar animation">
-            🔊 Test Talking Pulse
+            ${teamCallState.localMicMuted ? 'Unmute' : 'Mute'}
           </button>
           ${!teamCallState.screenShareActive ? `
             <button type="button" class="btn-primary tc-call-ctl-btn" id="tcStartScreenShareBtn">
@@ -7322,7 +7685,7 @@ function renderActiveTeamCallStage(){
             </button>
           `}
           <button type="button" class="btn-ghost tc-call-ctl-btn leave" id="tcLeaveCallBtn">
-            📞 Leave Call
+            Leave
           </button>
         </div>
       </div>
@@ -7363,7 +7726,8 @@ function renderActiveTeamCallStage(){
               </div>
               <div class="tc-call-tile-name">
                 <b>${esc(dname)}</b>
-                ${isMe ? `<small>(You)</small>` : ''}
+                ${isMe ? `<small>You</small>` : ''}
+                <span class="tc-speak-label">Speaking</span>
               </div>
               <div class="tc-call-tile-actions">
                 ${!isMe ? `
@@ -7388,19 +7752,10 @@ function renderActiveTeamCallStage(){
     if (teamCallState.localStream){
       teamCallState.localStream.getAudioTracks().forEach(t => { t.enabled = !teamCallState.localMicMuted; });
     }
+    if (teamCallState.activeChatId){
+      sendWS({ type: 'teamcall:mute', chatId: teamCallState.activeChatId, muted: teamCallState.localMicMuted });
+    }
     renderActiveTeamCallStage();
-  });
-
-  $('#tcSimSpeakBtn', slot)?.addEventListener('click', () => {
-    if (!state.user) return;
-    let step = 0;
-    const iv = setInterval(() => {
-      step++;
-      const v = step >= 8 ? 0 : (0.35 + Math.sin(step * 1.1) * 0.45);
-      updateCallTileVolumeDOM(state.user.id, v);
-      if (teamCallState.activeChatId) sendWS({ type: 'teamcall:volume', chatId: teamCallState.activeChatId, volume: v });
-      if (step >= 8) clearInterval(iv);
-    }, 130);
   });
 
   $('#tcStartScreenShareBtn', slot)?.addEventListener('click', startLocalScreenShare);
@@ -7412,11 +7767,13 @@ function renderActiveTeamCallStage(){
       const uidTarget = btn.dataset.lmute;
       if (teamCallState.locallyMutedUsers.has(uidTarget)){
         teamCallState.locallyMutedUsers.delete(uidTarget);
-        toast('🔊 Unmuted participant locally');
+        toast('Unmuted for you');
       } else {
         teamCallState.locallyMutedUsers.add(uidTarget);
-        toast('🔇 Locally muted for you only (others can still hear them)');
+        toast('Muted for you only');
       }
+      const rec = teamCallState.peers.get(uidTarget);
+      if (rec?.audio) rec.audio.muted = teamCallState.locallyMutedUsers.has(uidTarget);
       renderActiveTeamCallStage();
     };
   });
@@ -7443,12 +7800,12 @@ async function renderTeamChatView(){
   const room = state.teamChats.find(c => c.id === state.activeTeamChatId) || null;
 
   view.innerHTML = `
-    <div class="tc-shell">
+    <div class="tc-shell ${room ? 'room-open' : ''}" id="tcShell">
       <aside class="tc-sidebar">
         <div class="tc-sb-head">
           <div>
-            <h2>💬 Team Chat</h2>
-            <small>Live rooms · Voice calls · Screen share</small>
+            <h2>Team Chat</h2>
+            <small>Rooms, threads, and live voice</small>
           </div>
           <button type="button" class="back-btn" id="tcBackBtn">‹ Chat</button>
         </div>
@@ -7462,13 +7819,18 @@ async function renderTeamChatView(){
       <div class="tc-main">
         ${room ? `
           <div class="tc-room-head" id="tcRoomHead"></div>
+          <div class="tc-pinned-bar" id="tcPinnedBar" hidden></div>
           <div id="tcActiveCallStage" hidden></div>
           <div class="tc-messages" id="tcMessages"></div>
           <div class="tc-typing" id="tcTyping"></div>
           <div id="tcLimitSlot"></div>
 
           <div class="tc-composer-wrap">
-            <!-- @ Mention Autocomplete Popup Above Prompt Bar -->
+            <div class="tc-ai-reach">
+              <button type="button" class="tc-loki-chip" id="tcLokiChip">@Loki · ask the AI here</button>
+              <button type="button" class="btn-ghost" id="tcActivityBtn">Activity</button>
+              <button type="button" class="btn-ghost tc-rooms-toggle" id="tcRoomsToggle">Rooms</button>
+            </div>
             <div class="tc-mention-popup" id="tcMentionPopup" hidden></div>
 
             <!-- Pending Photo & File Attachments Tray -->
@@ -7493,10 +7855,10 @@ async function renderTeamChatView(){
             <form class="tc-composer" id="tcComposer">
               <input type="file" id="tcFileInput" multiple accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv,.html,.css" hidden>
               <button type="button" class="tc-icon-btn" id="tcAttachBtn" title="Attach photos or files">📎</button>
-              <button type="button" class="tc-icon-btn" id="tcMentionBtn" title="Tag @AI or @member">@</button>
-              <input type="text" id="tcInput" dir="auto" placeholder="Message ${esc(room.name)}… Type @ to mention @AI or a member" autocomplete="off">
+              <button type="button" class="tc-icon-btn" id="tcMentionBtn" title="Mention @Loki or a teammate">@</button>
+              <textarea id="tcInput" rows="1" dir="auto" placeholder="Message ${esc(room.name)}…  @Loki asks the AI" autocomplete="off"></textarea>
               <button type="button" class="tc-icon-btn mic-btn" id="tcVoiceStartBtn" title="Record voice message">🎤</button>
-              <button type="button" class="btn-ghost" id="tcAskAiBtn" title="Send and trigger AI response">🤖 Ask AI</button>
+              <button type="button" class="tc-ask-loki" id="tcAskAiBtn" title="Send this message to Loki">Ask Loki</button>
               <button type="submit" class="btn-primary" id="tcSendBtn">Send</button>
             </form>
           </div>
@@ -7507,6 +7869,8 @@ async function renderTeamChatView(){
             <p>Create a shared room on the left and invite teammates by username. Enjoy live @mentions with notification chimes, photo/file attachments, voice notes, and group voice calls with live screen sharing!</p>
           </div>
         `}
+        <aside class="tc-thread" id="tcThread" hidden></aside>
+        <aside class="tc-activity" id="tcActivity" hidden></aside>
       </div>
     </div>
     <datalist id="lzUserSuggest"></datalist>
@@ -7541,9 +7905,26 @@ async function renderTeamChatView(){
   if (room){
     renderTeamChatHeaderAndMembers();
     renderActiveTeamCallStage();
+    rerenderTeamFeed();
+    renderActivityFeed();
+    renderThreadPanel();
     const feed = $('#tcMessages');
-    (room.messages || []).forEach(m => feed.appendChild(renderTeamChatMessageEl(m)));
-    feed.scrollTop = feed.scrollHeight;
+    if (feed) feed.scrollTop = feed.scrollHeight;
+    $('#tcLokiChip')?.addEventListener('click', () => {
+      const inp = $('#tcInput');
+      if (!inp) return;
+      inp.value = (inp.value && !inp.value.endsWith(' ') ? inp.value + ' ' : inp.value) + '@Loki ';
+      inp.focus();
+    });
+    $('#tcActivityBtn')?.addEventListener('click', () => {
+      tcActivityOpen = !tcActivityOpen;
+      if (tcActivityOpen) tcOpenThreadId = null;
+      renderThreadPanel();
+      renderActivityFeed();
+    });
+    $('#tcRoomsToggle')?.addEventListener('click', () => {
+      $('#tcShell')?.classList.remove('room-open');
+    });
 
     const inp = $('#tcInput');
     const attTray = $('#tcAttTray');
@@ -7613,9 +7994,16 @@ async function renderTeamChatView(){
       const query = (m[1] || '').toLowerCase();
       const candidates = [
         {
+          handle: 'Loki',
+          displayName: 'Loki',
+          sub: 'Ask the AI in this chat',
+          isAi: true,
+          avatarHtml: `<span class="tc-men-ai-av">⚡</span>`
+        },
+        {
           handle: 'AI',
           displayName: 'Lokizenith AI',
-          sub: 'Ask AI to answer this question in the room',
+          sub: 'Same as @Loki',
           isAi: true,
           avatarHtml: `<span class="tc-men-ai-av">🤖</span>`
         },
@@ -7718,6 +8106,10 @@ async function renderTeamChatView(){
           return;
         }
       }
+      if (e.key === 'Enter' && !e.shiftKey){
+        e.preventDefault();
+        $('#tcComposer')?.requestSubmit();
+      }
     });
 
     // Voice Recording in Team Chat (Matches Screenshot 3 & 4)
@@ -7812,12 +8204,12 @@ async function renderTeamChatView(){
     $('#tcVoiceCancelBtn').onclick = () => finishTeamVoiceRecording(false);
     $('#tcVoiceSendBtn').onclick = () => finishTeamVoiceRecording(true);
 
-    const sendTeamChatPayload = async ({ content = '', forceAi = false, voiceRecording = null } = {}) => {
+    const sendTeamChatPayload = async ({ content = '', forceAi = false, voiceRecording = null, parentId = null } = {}) => {
       const text = String(content || '').trim();
       const attachments = [...tcPendingAttachments];
       if (!text && !attachments.length && !voiceRecording) return;
 
-      const wantAi = forceAi || /(?:^|\s)(@ai|@lokizenith|\/ai)\b/i.test(text);
+      const wantAi = forceAi || /(?:^|\s)(@ai|@lokizenith|@loki|\/ai)\b/i.test(text);
       if (wantAi && !usage.canUse()){
         const slot = $('#tcLimitSlot');
         if (slot){
@@ -7843,14 +8235,15 @@ async function renderTeamChatView(){
         askAi: wantAi,
         attachments,
         voiceRecording,
-        clientMsgId
+        clientMsgId,
+        parentId: parentId || undefined
       });
       if (sentViaWs) return;
 
       try {
         const res = await api(`/api/team-chats/${encodeURIComponent(room.id)}/messages`, {
           method: 'POST',
-          body: JSON.stringify({ content: text, askAi: wantAi, attachments, voiceRecording, clientMsgId })
+          body: JSON.stringify({ content: text, askAi: wantAi, attachments, voiceRecording, clientMsgId, parentId: parentId || undefined })
         });
         if (res.account) updateAccount(res.account);
         if (res.message && !room.messages.some(m => m.id === res.message.id || (clientMsgId && m.clientMsgId === clientMsgId))){
@@ -7873,12 +8266,14 @@ async function renderTeamChatView(){
       }
     };
 
+    sendTeamChatFromComposer = sendTeamChatPayload;
     $('#tcComposer').onsubmit = e => {
       e.preventDefault();
       sendTeamChatPayload({ content: inp.value, forceAi: false });
     };
     $('#tcAskAiBtn').onclick = () => {
-      sendTeamChatPayload({ content: inp.value, forceAi: true });
+      const cur = inp.value.trim();
+      sendTeamChatPayload({ content: cur ? (/(?:^|\s)@loki\b/i.test(cur) ? cur : '@Loki ' + cur) : '@Loki ', forceAi: true });
     };
   }
 }
@@ -8078,15 +8473,19 @@ function broadcastLokiTeamSync(patch){
 async function renderSharedHubView(){
   const view = $('#sharedHubView');
   if (!view) return;
-  try {
-    const [snipsRes, notifsRes] = await Promise.all([
-      api('/api/shared-snippets'),
-      api('/api/notifications')
-    ]);
-    state.sharedSnippets = snipsRes.snippets || [];
-    state.notifications = notifsRes.notifications || [];
-    updateNotifBadge();
-  } catch(_){}
+  if (!state.token){
+    state.sharedSnippets = state.sharedSnippets || [];
+  } else {
+    try {
+      const [snipsRes, notifsRes] = await Promise.all([
+        api('/api/shared-snippets'),
+        api('/api/notifications')
+      ]);
+      state.sharedSnippets = snipsRes.snippets || [];
+      state.notifications = notifsRes.notifications || [];
+      updateNotifBadge();
+    } catch(_){}
+  }
 
   const sharedChats = (state.notifications || []).filter(n => n.type === 'shared_chat' && n.payload);
 
@@ -8542,6 +8941,10 @@ function bindStaticUI(){
       const activeInvite = typedInvite || state.pendingInvite || '';
       const errEl = $('#authError');
       const subBtn = $('#authSubmitBtn');
+      if (state.authMode === 'register' && password.length < 8){
+        if (errEl){ errEl.hidden = false; errEl.textContent = 'Password must be at least 8 characters.'; }
+        return;
+      }
       if (errEl) errEl.hidden = true;
       if (subBtn) subBtn.disabled = true;
       try {

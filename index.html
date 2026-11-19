@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/atom-one-dark.min.css">
 <link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/v22.css">
+<link rel="stylesheet" href="/focus.css">
 <meta property="og:title" content="Lokizenith AI — AI Chat & Code Studio" />
 <meta property="og:description" content="An advanced AI platform for chatting, coding, and creative tasks featuring voice interaction, design tools, and interactive learning." />
 <meta property="og:url" content="https://lokizenith.com/" />
@@ -582,11 +583,11 @@
     <form class="lz-auth-form" id="authForm">
       <div class="lz-auth-field">
         <label for="authUsername">Username</label>
-        <input type="text" id="authUsername" name="username" required minlength="2" maxlength="28" autocomplete="username" placeholder="Choose a unique username">
+        <input type="text" id="authUsername" name="username" required minlength="2" maxlength="28" autocomplete="username" placeholder="Your username">
       </div>
       <div class="lz-auth-field">
         <label for="authPassword">Password</label>
-        <input type="password" id="authPassword" name="password" required minlength="4" autocomplete="current-password" placeholder="At least 4 characters">
+        <input type="password" id="authPassword" name="password" required minlength="1" autocomplete="current-password" placeholder="Your password">
       </div>
       <div class="lz-auth-field" id="authInviteField" hidden>
         <label for="authInviteInput">Invite Number / Code <small style="color:var(--muted);font-weight:500;">(Optional · Inviter gets +25k)</small></label>
@@ -595,6 +596,7 @@
       <div class="lz-auth-err" id="authError" hidden></div>
       <button type="submit" class="btn-primary lz-auth-submit" id="authSubmitBtn">Log In</button>
     </form>
+    <p class="lz-auth-legal" id="authLegalNote" hidden>By creating an account you agree to the <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>.</p>
     <div class="lz-auth-foot">
       <span>✓ Unique username per account</span>
       <span>✓ Saved on server across devices</span>
@@ -786,28 +788,14 @@
 
 <div class="toasts" id="toasts"></div>
 
-<script src="https://www.paypal.com/sdk/js?client-id=BAAX2U_UunOALXjCFc5_ByUQ-Z41HINtiJNFrJYiIZImn34v7OtTrwFlPGw7Zrb1oJ4uy5n5KX0Qq73UxU&vault=true&intent=subscription" data-sdk-integration-source="button-factory" async></script>
-<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/languages/matlab.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/languages/rust.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/languages/go.min.js"></script>
 <script src="/i18n.js"></script>
 <script src="/engine.js"></script>
 <script src="/auth_teams.js"></script>
 <script src="/events.js"></script>
 <script src="/app.js"></script>
 <script src="/lokicode.js"></script>
-<script src="/call.js"></script>
-<script src="/features.js"></script>
-<script src="/changelog.js"></script>
-<script src="/tools.js"></script>
-<script src="/places.js"></script>
 <script src="/backgrounds.js"></script>
-<script src="/design.js"></script>
 <script src="/lokibot.js"></script>
-<script src="/benches.js"></script>
 <script src="/guard.js"></script>
 <script type="module" src="/src/main.tsx"></script>
 </body>

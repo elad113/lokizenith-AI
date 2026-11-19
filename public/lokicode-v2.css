@@ -190,16 +190,31 @@
   gap: 6px;
   justify-content: flex-start;
 }
+#codeView.lc-v2 .lc-langs {
+  display: grid !important;
+  grid-template-columns: repeat(11, minmax(0, 1fr));
+  overflow: visible;
+}
+#codeView.lc-v2 .lang {
+  min-width: 0;
+  padding: 8px 4px;
+  font-size: 0.74rem;
+}
 #codeView.lc-v2 .lc-editor-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
-  min-height: 420px;
+  display: flex;
+  flex-direction: column;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
+#codeView.lc-v2 #lcPanel {
+  overflow: visible;
+  height: auto !important;
+  max-height: none !important;
+}
 #codeView.lc-v2 #lcCodeWrap {
-  min-height: 420px;
-  max-height: min(70vh, 820px);
-  overflow: auto;
+  height: auto !important;
+  min-height: 0;
+  max-height: none !important;
+  overflow: visible !important;
   background:
     linear-gradient(90deg, rgba(0, 255, 156, 0.04) 0 46px, transparent 46px),
     rgba(0, 0, 0, 0.25);
@@ -248,7 +263,7 @@
   list-style: none;
   margin: 0;
   padding: 8px;
-  overflow: auto;
+  overflow: visible;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -276,12 +291,29 @@
 }
 .lc-fix-btn:hover { background: rgba(0, 255, 156, 0.22); }
 
+.lc-page-block {
+  border-radius: 22px;
+  border: 1px solid rgba(0, 255, 156, 0.16);
+  background: rgba(3, 10, 8, 0.72);
+  padding: 16px 18px 18px;
+}
+.lc-page-block-head h2 { margin: 0 0 4px; font-size: 1.05rem; }
+.lc-page-block-head p { margin: 0 0 12px; color: #9fb5aa; }
+.lc-page-hist-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.lc-page-hist-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.25);
+}
 .lc-explain-dock {
-  margin: 0 12px 12px;
-  border-radius: 16px;
-  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-color: rgba(125, 211, 252, 0.28);
   background: rgba(8, 18, 28, 0.9);
-  padding: 12px 14px 16px;
   animation: lc-rise 0.3s ease both;
 }
 .lc-explain-dock header { display: flex; justify-content: space-between; align-items: center; }
@@ -295,8 +327,8 @@
   white-space: pre-wrap;
   font-family: var(--mono);
   font-size: 0.78rem;
-  max-height: 140px;
-  overflow: auto;
+  max-height: none;
+  overflow: visible;
 }
 .lc-explain-body { line-height: 1.55; color: #e5eef5; font-size: 0.92rem; }
 .lc-explain-body p { margin: 0 0 8px; }
@@ -311,14 +343,13 @@
   padding: 18px;
 }
 .lc-version-card {
-  width: min(980px, 100%);
-  max-height: min(86vh, 820px);
-  overflow: auto;
-  border-radius: 20px;
-  background: #07110d;
-  border: 1px solid rgba(0, 255, 156, 0.25);
-  padding: 16px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(0, 255, 156, 0.2);
+  padding: 14px;
 }
 .lc-version-card h3 { margin: 0 0 8px; }
 .lc-version-picks { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -336,7 +367,7 @@
   font-family: var(--mono);
   font-size: 0.75rem;
 }
-.lc-diff-col { border-radius: 12px; overflow: auto; max-height: 420px; background: rgba(0, 0, 0, 0.3); }
+.lc-diff-col { border-radius: 12px; overflow: visible; max-height: none; background: rgba(0, 0, 0, 0.3); }
 .lc-diff-col div { padding: 1px 8px; white-space: pre; min-height: 1.35em; }
 .lc-diff-col div.chg { background: rgba(0, 255, 156, 0.12); }
 
@@ -408,14 +439,16 @@
   50% { opacity: 0; }
 }
 
+@media (max-width: 1100px) {
+  #codeView.lc-v2 .lc-langs { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
 @media (max-width: 860px) {
-  .lc-snippet-rail { flex-wrap: nowrap; overflow-x: auto; }
-  .lc-snippet-card { flex: 0 0 210px; }
-  #codeView.lc-v2 .lc-editor-split { grid-template-columns: 1fr; }
-  .lc-error-panel { border-left: 0; border-top: 1px solid rgba(255, 255, 255, 0.06); max-height: 280px; }
+  .lc-snippet-rail { flex-wrap: wrap; overflow: visible; }
+  .lc-snippet-card { flex: 1 1 140px; }
+  #codeView.lc-v2 .lc-langs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lc-error-panel { border-left: 0; border-top: 1px solid rgba(255, 255, 255, 0.06); max-height: none; }
   #codeView.lc-v2 .lc-hero-bar { padding: 14px; }
-  #codeView.lc-v2 .lc-work-cur { display: none; }
-  #codeView.lc-v2 #lcCodeWrap { min-height: 280px; max-height: 55vh; }
+  #codeView.lc-v2 #lcCodeWrap { max-height: none !important; overflow: visible !important; }
   .lc-diff-grid { grid-template-columns: 1fr; }
   .lz-palette { padding-top: 8vh; }
 }

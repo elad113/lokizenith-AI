@@ -447,15 +447,24 @@
             </ul>
           </aside>
         </div>
-        <section class="lc-explain-dock" id="lcExplainDock" hidden>
-          <header>
-            <b id="lcExplainTitle">Explain</b>
-            <button type="button" id="lcExplainClose" aria-label="Close explanation">✕</button>
-          </header>
-          <pre id="lcExplainQuote"></pre>
-          <div id="lcExplainBody" class="lc-explain-body"></div>
-        </section>
       </div>
+
+      <section class="lc-page-block lc-explain-dock" id="lcExplainDock">
+        <header>
+          <b id="lcExplainTitle">Explain</b>
+        </header>
+        <pre id="lcExplainQuote">Highlight any lines in the editor. The explanation stays on this page.</pre>
+        <div id="lcExplainBody" class="lc-explain-body">Explanations appear here, under the script, without leaving LokiCode.</div>
+      </section>
+
+      <section class="lc-page-block" id="lcPageHistory">
+        <header class="lc-page-block-head">
+          <h2>Script history</h2>
+          <p>Every save stays on this page. Compare two versions and restore one into the editor.</p>
+        </header>
+        <div id="lcPageHistList" class="lc-page-hist-list"></div>
+        <div id="lcPageVersionDiff"></div>
+      </section>
     </section>
 
     <!-- ===== LOKIBOT VIEW (FULL AUTONOMOUS MULTI-AGENT & LINUX COMPUTER PLATFORM) ===== -->

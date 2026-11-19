@@ -154,8 +154,7 @@
   function renderRail() {
     const rail = $('#lcSnippetRail');
     if (!rail) return;
-    const lang = window.LokiCode?.getState?.().lang;
-    if (lang !== 'lsl' || !snippets.length) {
+    if (!snippets.length) {
       rail.hidden = true;
       return;
     }
@@ -276,31 +275,23 @@
     return `<div class="lc-diff-grid"><div class="lc-diff-col">${left}</div><div class="lc-diff-col">${right}</div></div>`;
   }
 
-  function openVersions(item) {
+  function openVersions(item, opts = {}) {
     if (!item) return;
-    let host = $('#lcVersionStudio');
-    if (!host) {
-      host = document.createElement('div');
-      host.id = 'lcVersionStudio';
-      host.className = 'lc-version-studio';
-      document.body.appendChild(host);
-    }
+    const host = $('#lcPageVersionDiff');
+    if (!host) return;
     const versions = [
       { id: 'current', label: 'Current', code: item.code, savedAt: item.updatedAt },
       ...((item.versions || []).map((v, i) => ({ ...v, label: `Save ${i + 1}` })))
     ];
-    const opts = versions.map((v, i) => `<option value="${i}">${esc(v.label)} · ${fmtWhen(v.savedAt)} · ${String(v.code || '').split('\n').length} lines</option>`).join('');
-    host.hidden = false;
+    const options = versions.map((v, i) => `<option value="${i}">${esc(v.label)} · ${fmtWhen(v.savedAt)} · ${String(v.code || '').split('\n').length} lines</option>`).join('');
     host.innerHTML = `
-      <div class="lc-version-card" role="dialog" aria-label="Script versions">
-        <h3>Versions · ${esc(item.title || 'Script')}</h3>
-        <p style="color:#9fb5aa;margin-top:0">Compare two saves side by side, then restore either one into the editor.</p>
+      <div class="lc-version-card" aria-label="Script versions">
+        <h3>Compare · ${esc(item.title || 'Script')}</h3>
         <div class="lc-version-picks">
-          <label>Left <select id="lcVerA">${opts}</select></label>
-          <label>Right <select id="lcVerB">${opts}</select></label>
+          <label>Left <select id="lcVerA">${options}</select></label>
+          <label>Right <select id="lcVerB">${options}</select></label>
           <span class="lc-version-actions">
             <button type="button" id="lcVerRestore">Restore right side</button>
-            <button type="button" id="lcVerClose">Close</button>
           </span>
         </div>
         <div id="lcVerDiff"></div>
@@ -316,16 +307,42 @@
     a.onchange = draw;
     b.onchange = draw;
     draw();
-    $('#lcVerClose').onclick = () => { host.hidden = true; };
-    host.onclick = (e) => { if (e.target === host) host.hidden = true; };
     $('#lcVerRestore').onclick = () => {
       const right = versions[Number(b.value)] || versions[0];
       window.LokiCode.setCode(right.code, false);
       if (item.lang) window.LokiCode.getState().lang = item.lang;
       window.LokiCode.saveCodeToHistory({ notify: true, explicitTitle: item.title });
-      host.hidden = true;
+      renderInlineHistory();
       toast('Restored that version into the editor', 'ok');
     };
+    if (opts.scroll) $('#lcPageHistory')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderInlineHistory() {
+    const host = $('#lcPageHistList');
+    if (!host || !window.LokiCode?.getHistory) return;
+    const list = window.LokiCode.getHistory();
+    if (!list.length) {
+      host.innerHTML = '<p class="lc-err-empty">Saves show up here on this page. Generate or save a script to start a history.</p>';
+      const diff = $('#lcPageVersionDiff');
+      if (diff) diff.innerHTML = '';
+      return;
+    }
+    host.innerHTML = list.map((item) => {
+      const lines = String(item.code || '').split('\n').length;
+      const saves = (item.versions || []).length;
+      return `<article class="lc-page-hist-card">
+        <div><b>${esc(item.title || 'Script')}</b><div style="color:#9fb5aa;font-size:.8rem">${lines} lines · ${saves} earlier save${saves === 1 ? '' : 's'} · ${esc(item.lang || '')}</div></div>
+        <button type="button" class="lc-fix-btn" data-hist="${esc(item.id)}">Compare on this page</button>
+      </article>`;
+    }).join('');
+    host.querySelectorAll('[data-hist]').forEach((btn) => {
+      btn.onclick = () => {
+        const item = list.find((x) => x.id === btn.dataset.hist);
+        if (item) openVersions(item, { scroll: true });
+      };
+    });
+    openVersions(list[0]);
   }
 
   function paletteItems() {
@@ -340,7 +357,7 @@
       { kind: 'Page', title: 'Settings', run: () => $('#openSettings')?.click() },
       { kind: 'Action', title: 'New chat', run: () => App.startNewChat() },
       { kind: 'Action', title: 'LSL snippet library', run: openSnippets },
-      { kind: 'Action', title: 'Script version history', run: () => { App.showView('code'); $('#lcHistoryBtn')?.click(); } },
+      { kind: 'Action', title: 'Script version history', run: () => { App.showView('code'); $('#lcPageHistory')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } },
       { kind: 'Action', title: 'Explain selection', run: () => { App.showView('code'); openExplain(); } }
     ];
     const convs = (window.App && App.state && App.state.convs) || [];
@@ -475,13 +492,22 @@
     };
     hide();
     setInterval(hide, 500);
+    const style = document.createElement('style');
+    style.textContent = '.whatsnew{display:none !important}';
+    document.head.appendChild(style);
     if (window.App) App.showView('code');
   }
 
   function init() {
     loadSnippets();
-    $('#lcSnippetsBtn') && ($('#lcSnippetsBtn').onclick = openSnippets);
-    $('#lcExplainClose') && ($('#lcExplainClose').onclick = () => { $('#lcExplainDock').hidden = true; });
+    $('#lcSnippetsBtn') && ($('#lcSnippetsBtn').onclick = () => $('#lcSnippetRail')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    if ($('#lcHistoryBtn')) {
+      $('#lcHistoryBtn').onclick = (e) => {
+        e.preventDefault();
+        renderInlineHistory();
+        $('#lcPageHistory')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
+    }
     const explainBtn = $('#lcExplain');
     if (explainBtn) explainBtn.onclick = () => openExplain(selectionInsideEditor());
     $('#lcLangs') && $('#lcLangs').addEventListener('click', () => setTimeout(renderRail, 0));
@@ -501,8 +527,10 @@
       window.LokiCode.onShow = function () {
         prev.apply(this, arguments);
         renderRail();
+        renderInlineHistory();
       };
     }
+    renderInlineHistory();
     bootPreview();
   }
 

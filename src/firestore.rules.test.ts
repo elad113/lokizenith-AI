@@ -50,6 +50,14 @@ test('Dirty Dozen #9-12: Admin-Only Providers, Array Bounds, Server Timestamps, 
   assert.ok(rulesText.includes('resource.data.ownerId == request.auth.uid || isAdmin()'));
 });
 
+test('server-only durable store collections deny every client read and write', () => {
+  for (const name of ['lz_users', 'lz_sessions', 'lz_user_data', 'lz_sections']) {
+    assert.ok(rulesText.includes(`match /${name}/{docId}`));
+  }
+  assert.ok(rulesText.includes('Server-only durable store'));
+  assert.ok(rulesText.includes('allow read, write: if false;'));
+});
+
 test('Dirty Dozen #13-14: Eternal AccountVault & Admin-Only PlatformVaultAccounts guards', () => {
   assert.ok(rulesText.includes('match /accountVaults/{userId}'));
   assert.ok(rulesText.includes('isValidAccountVault(incoming())'));

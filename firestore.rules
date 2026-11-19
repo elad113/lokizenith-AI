@@ -432,5 +432,35 @@ service cloud.firestore {
 
       allow delete: if isValidId(accountId) && isAdmin();
     }
+
+    // =========================================================================
+    // Server-only durable store (Admin SDK). Clients must not read password
+    // hashes, sessions, chats, or any other record kept here. The Admin SDK
+    // bypasses security rules; these matches keep the web/mobile SDK out.
+    // =========================================================================
+    match /lz_users/{docId} {
+      allow read, write: if false;
+      match /{sub=**} {
+        allow read, write: if false;
+      }
+    }
+    match /lz_sessions/{docId} {
+      allow read, write: if false;
+      match /{sub=**} {
+        allow read, write: if false;
+      }
+    }
+    match /lz_user_data/{docId} {
+      allow read, write: if false;
+      match /{sub=**} {
+        allow read, write: if false;
+      }
+    }
+    match /lz_sections/{docId} {
+      allow read, write: if false;
+      match /{sub=**} {
+        allow read, write: if false;
+      }
+    }
   }
 }

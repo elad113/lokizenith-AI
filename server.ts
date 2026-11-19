@@ -66,6 +66,7 @@ import {
   recordCommunityActivity,
   claimCommunityEventTierForUser,
   flushStoreToDiskSync,
+  initDurableStore,
   getVaultStatusSummary,
   createManualStoreSnapshot,
   restoreStoreSnapshot,
@@ -137,6 +138,7 @@ import {
 dotenv.config();
 
 async function startServer() {
+  await initDurableStore();
   const app = express();
   const httpServer = http.createServer(app);
   const PORT = Number(process.env.PORT) || 3000;
@@ -6831,4 +6833,7 @@ Feel free to ask for additional columns or more granular data!`;
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('[Server] Refusing to start:', err instanceof Error ? err.stack || err.message : err);
+  process.exit(1);
+});

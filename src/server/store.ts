@@ -70,6 +70,23 @@ import {
   normalizeMaintenanceUnit,
   resolveMaintenanceState,
 } from '../utils/maintenanceMode.ts';
+import {
+  SECTION_KEYS,
+  diffStringMap,
+  probeFirestoreEmulator,
+  resolveFirebaseTarget,
+  resolveStorageMode,
+  sectionDefault,
+  suppressAccidentalUserWipe,
+} from './firestoreCodec.ts';
+import {
+  firestoreRequestAsync,
+  firestoreRequestSync,
+  setFirestoreRemoteHandler,
+  startFirestoreWorker,
+  stopFirestoreWorker,
+  type RemoteChange,
+} from './firestoreBridge.ts';
 
 export interface TeamChatAttachment {
   kind: 'image' | 'file';
@@ -327,10 +344,10 @@ export function defaultPlatformConfig(): PlatformConfig {
   };
 }
 
-function emptyStore(): StoreShape {
-  const st: StoreShape = {
+function blankStore(): StoreShape {
+  return {
     schemaVersion: CURRENT_STORE_SCHEMA_VERSION,
-    lastSavedAt: Date.now(),
+    lastSavedAt: 0,
     saveCount: 0,
     users: {},
     sessions: {},
@@ -348,7 +365,11 @@ function emptyStore(): StoreShape {
     communityEvents: {},
     activeCommunityEventId: null,
   };
-  ensureRootAdminAccount(st);
+}
+
+function emptyStore(): StoreShape {
+  const st = blankStore();
+  st.lastSavedAt = Date.now();
   return st;
 }
 
@@ -442,42 +463,50 @@ function postMigrateNormalizeUsers(loaded: StoreShape): void {
 function ensureRootAdminAccount(loaded: StoreShape): void {
   if (!loaded.users) loaded.users = {};
   if (!loaded.userData) loaded.userData = {};
-  const hasRoot = Object.values(loaded.users).some((u) => isRootAdminAccount(u));
-  if (!hasRoot) {
-    const rootId = uid('usr');
-    const rootUname = 'EladBenczel';
-    const rootEmail = 'benczelelad@gmail.com';
-    const now = Date.now();
-    const pw = hashPassword('LokizenithAdmin2026!');
-    loaded.users[rootId] = {
-      id: rootId,
-      username: rootUname,
-      usernameLower: rootUname.toLowerCase(),
-      displayName: rootUname,
-      passwordHash: pw.hash,
-      salt: pw.salt,
-      authProvider: 'password',
-      googleEmail: rootEmail,
-      adminAccessLevel: 'full',
-      adminPermissions: [...ALL_ADMIN_MODULES],
-      tokensRemaining: 25000,
-      tokenLimitBase: 25000,
-      bonusTokens: 0,
-      plan: 'free',
-      planStatus: 'active',
-      planSource: 'free',
-      totalTokensUsed: 0,
-      usedGiftCodes: [],
-      createdAt: now,
-      lastSeenAt: now,
-      lastResetAt: now,
-      totalTimeSeconds: 0,
-      inviteCode: generateInviteCode(rootUname),
-      referralCount: 0,
-      referralTokensEarned: 0,
-    };
-    loaded.userData[rootId] = { convs: [], settings: {}, updatedAt: now };
-  }
+  // Seed only into a completely empty user table. Existing accounts, including
+  // the root admin, keep whatever password they already have.
+  if (Object.keys(loaded.users).length > 0) return;
+
+  const rootId = uid('usr');
+  const rootUname = 'EladBenczel';
+  const rootEmail = 'benczelelad@gmail.com';
+  const now = Date.now();
+  const password = String(process.env.ROOT_ADMIN_PASSWORD || '');
+  const hasPassword = password.length > 0;
+  const pw = hasPassword ? hashPassword(password) : null;
+  loaded.users[rootId] = {
+    id: rootId,
+    username: rootUname,
+    usernameLower: rootUname.toLowerCase(),
+    displayName: rootUname,
+    passwordHash: pw?.hash || '',
+    salt: pw?.salt || '',
+    authProvider: hasPassword ? 'password' : 'google',
+    googleEmail: rootEmail,
+    adminAccessLevel: 'full',
+    adminPermissions: [...ALL_ADMIN_MODULES],
+    tokensRemaining: 25000,
+    tokenLimitBase: 25000,
+    bonusTokens: 0,
+    plan: 'free',
+    planStatus: 'active',
+    planSource: 'free',
+    totalTokensUsed: 0,
+    usedGiftCodes: [],
+    createdAt: now,
+    lastSeenAt: now,
+    lastResetAt: now,
+    totalTimeSeconds: 0,
+    inviteCode: generateInviteCode(rootUname),
+    referralCount: 0,
+    referralTokensEarned: 0,
+  };
+  loaded.userData[rootId] = { convs: [], settings: {}, updatedAt: now };
+  console.log(
+    hasPassword
+      ? '[Store] Seeded root admin using ROOT_ADMIN_PASSWORD.'
+      : '[Store] Seeded root admin as Google-only (benczelelad@gmail.com). Set ROOT_ADMIN_PASSWORD to enable a password.'
+  );
 }
 
 function readCandidateFromFile(filePath: string, sourceLabel: string): StoreCandidateReport | null {
@@ -627,13 +656,448 @@ function loadStoreFromDisk(): StoreShape {
     return migrated;
   } catch (e) {
     console.warn('[Store] Failed to read store.json cleanly, attempting fallback:', e);
-    return emptyStore();
+    const fallback = emptyStore();
+    ensureRootAdminAccount(fallback);
+    return fallback;
   }
 }
 
-export const store: StoreShape = loadStoreFromDisk();
+const STORAGE_MODE = resolveStorageMode();
+let durableReady = STORAGE_MODE !== 'firestore';
+let firestoreInitPromise: Promise<void> | null = null;
+let firestoreDebounce: ReturnType<typeof setTimeout> | null = null;
+
+const baselines = {
+  users: new Map<string, string>(),
+  sessions: new Map<string, string>(),
+  userData: new Map<string, string>(),
+  sections: new Map<string, string>(),
+};
+
+const sessionMissUntil = new Map<string, number>();
+const userDataChecked = new Set<string>();
+
+export const store: StoreShape = STORAGE_MODE === 'firestore' ? blankStore() : loadStoreFromDisk();
+
+function metaFromStore(source: StoreShape) {
+  return {
+    schemaVersion: source.schemaVersion || CURRENT_STORE_SCHEMA_VERSION,
+    lastSavedAt: source.lastSavedAt || 0,
+    saveCount: source.saveCount || 0,
+    lastMigratedAt: source.lastMigratedAt ?? null,
+    migratedFromVersion: source.migratedFromVersion ?? null,
+    activeCommunityEventId: source.activeCommunityEventId ?? null,
+  };
+}
+
+function sectionJson(source: StoreShape, key: string): string {
+  if (key === 'meta') return JSON.stringify(metaFromStore(source));
+  const value = (source as unknown as Record<string, unknown>)[key];
+  return JSON.stringify(value === undefined ? sectionDefault(key) : value);
+}
+
+function seedBaselines(source: StoreShape): void {
+  baselines.users = diffStringMap(new Map(), source.users).next;
+  baselines.sessions = diffStringMap(new Map(), source.sessions).next;
+  baselines.userData = diffStringMap(new Map(), source.userData).next;
+  baselines.sections = new Map();
+  for (const key of SECTION_KEYS) baselines.sections.set(key, sectionJson(source, key));
+  baselines.sections.set('meta', sectionJson(source, 'meta'));
+}
+
+function snapshotBaselines() {
+  return {
+    users: new Map(baselines.users),
+    sessions: new Map(baselines.sessions),
+    userData: new Map(baselines.userData),
+    sections: new Map(baselines.sections),
+    saveCount: store.saveCount,
+    lastSavedAt: store.lastSavedAt,
+    schemaVersion: store.schemaVersion,
+  };
+}
+
+function restoreBaselines(prev: ReturnType<typeof snapshotBaselines>): void {
+  baselines.users = prev.users;
+  baselines.sessions = prev.sessions;
+  baselines.userData = prev.userData;
+  baselines.sections = prev.sections;
+  store.saveCount = prev.saveCount;
+  store.lastSavedAt = prev.lastSavedAt;
+  store.schemaVersion = prev.schemaVersion;
+}
+
+function adoptStore(next: StoreShape): void {
+  const current = store as unknown as Record<string, unknown>;
+  const incoming = next as unknown as Record<string, unknown>;
+  for (const key of Object.keys(current)) {
+    if (!(key in incoming)) delete current[key];
+  }
+  Object.assign(current, incoming);
+}
+
+function clearFirestoreDebounce(): void {
+  if (firestoreDebounce) {
+    clearTimeout(firestoreDebounce);
+    firestoreDebounce = null;
+  }
+  saveQueued = false;
+}
+
+function collectFirestoreDiff(): {
+  payload: {
+    users: { upserts: { id: string; json: string }[]; deletes: string[] };
+    sessions: { upserts: { id: string; json: string }[]; deletes: string[] };
+    userData: { upserts: { id: string; json: string }[]; deletes: string[] };
+    sections: { id: string; json: string }[];
+  };
+  rollback: () => void;
+} | null {
+  const prev = snapshotBaselines();
+  const users = diffStringMap(baselines.users, store.users);
+  const sessions = diffStringMap(baselines.sessions, store.sessions);
+  const userData = diffStringMap(baselines.userData, store.userData);
+  const wipe = suppressAccidentalUserWipe(users, baselines.users.size);
+  if (wipe.blocked) {
+    console.error(
+      '[Store] Refusing to delete every loaded Firestore user. Memory no longer has those accounts, and this process did not write replacements.'
+    );
+    userData.deletes = [];
+  }
+  const sections: { id: string; json: string }[] = [];
+  const nextSections = new Map<string, string>();
+  for (const key of SECTION_KEYS) {
+    const json = sectionJson(store, key);
+    nextSections.set(key, json);
+    if (baselines.sections.get(key) !== json) sections.push({ id: key, json });
+  }
+  const currentMeta = sectionJson(store, 'meta');
+  nextSections.set('meta', currentMeta);
+  const metaChanged = baselines.sections.get('meta') !== currentMeta;
+  const hasData =
+    users.upserts.length > 0 ||
+    wipe.deletes.length > 0 ||
+    sessions.upserts.length > 0 ||
+    sessions.deletes.length > 0 ||
+    userData.upserts.length > 0 ||
+    userData.deletes.length > 0 ||
+    sections.length > 0 ||
+    metaChanged;
+  baselines.users = users.next;
+  baselines.sessions = sessions.next;
+  baselines.userData = userData.next;
+  baselines.sections = nextSections;
+  if (!hasData) return null;
+
+  store.schemaVersion = CURRENT_STORE_SCHEMA_VERSION;
+  store.lastSavedAt = Date.now();
+  store.saveCount = (store.saveCount || 0) + 1;
+  const metaJson = sectionJson(store, 'meta');
+  baselines.sections.set('meta', metaJson);
+  sections.push({ id: 'meta', json: metaJson });
+
+  return {
+    payload: {
+      users: { upserts: users.upserts, deletes: wipe.deletes },
+      sessions: { upserts: sessions.upserts, deletes: sessions.deletes },
+      userData: { upserts: userData.upserts, deletes: userData.deletes },
+      sections,
+    },
+    rollback: () => restoreBaselines(prev),
+  };
+}
+
+function flushFirestoreNow(snapshotReason?: string): void {
+  clearFirestoreDebounce();
+  const taken = collectFirestoreDiff();
+  if (taken) {
+    try {
+      firestoreRequestSync('flush', taken.payload, 45_000);
+    } catch (err) {
+      taken.rollback();
+      storeDirty = true;
+      console.error('[Store] Firestore flush failed:', err instanceof Error ? err.message : err);
+      throw err;
+    }
+  }
+  storeDirty = false;
+  walPendingCount = 0;
+  if (snapshotReason) {
+    try {
+      const fileName = writeSnapshotFile(snapshotReason, JSON.stringify(store));
+      if (fileName) lastAutoSnapshotAt = Date.now();
+    } catch (err) {
+      console.warn('[Store] Local snapshot copy failed:', err instanceof Error ? err.message : err);
+    }
+  }
+}
+
+function persistStoreFirestore(opts?: { immediate?: boolean; snapshotReason?: string }): void {
+  storeDirty = true;
+  if (opts?.immediate || opts?.snapshotReason) {
+    flushFirestoreNow(opts?.snapshotReason);
+    return;
+  }
+  if (saveQueued) return;
+  saveQueued = true;
+  firestoreDebounce = setTimeout(() => {
+    saveQueued = false;
+    firestoreDebounce = null;
+    if (!storeDirty || !durableReady) return;
+    try {
+      flushFirestoreNow();
+    } catch {
+      // Logged inside flush. The safety timer retries while the store stays dirty.
+    }
+  }, 400);
+  if (typeof firestoreDebounce.unref === 'function') firestoreDebounce.unref();
+}
+
+const remoteBuffer: RemoteChange[] = [];
+let acceptRemote = false;
+
+function applyRemoteChange(msg: RemoteChange): void {
+  if (STORAGE_MODE !== 'firestore' || !msg?.id) return;
+  if (!acceptRemote) {
+    remoteBuffer.push(msg);
+    return;
+  }
+  applyRemoteChangeNow(msg);
+}
+
+function flushRemoteBuffer(): void {
+  acceptRemote = true;
+  while (remoteBuffer.length) {
+    const msg = remoteBuffer.shift();
+    if (msg) applyRemoteChangeNow(msg);
+  }
+}
+
+function applyRemoteChangeNow(msg: RemoteChange): void {
+  if (!durableReady) return;
+  try {
+    if (msg.coll === 'sessions') {
+      if (msg.change === 'removed') {
+        const current = store.sessions[msg.id];
+        if (!current) {
+          baselines.sessions.delete(msg.id);
+          return;
+        }
+        if (baselines.sessions.get(msg.id) === JSON.stringify(current)) {
+          delete store.sessions[msg.id];
+          baselines.sessions.delete(msg.id);
+        }
+        return;
+      }
+      const parsed = JSON.parse(msg.json);
+      if (!parsed?.token) return;
+      const existing = store.sessions[parsed.token];
+      if (!existing) {
+        store.sessions[parsed.token] = parsed;
+        baselines.sessions.set(parsed.token, JSON.stringify(store.sessions[parsed.token]));
+        return;
+      }
+      if (baselines.sessions.get(parsed.token) === JSON.stringify(existing)) {
+        store.sessions[parsed.token] = parsed;
+        baselines.sessions.set(parsed.token, JSON.stringify(store.sessions[parsed.token]));
+      }
+      return;
+    }
+
+    if (msg.coll !== 'users') return;
+    if (msg.change === 'removed') {
+      const current = store.users[msg.id];
+      if (!current) {
+        baselines.users.delete(msg.id);
+        return;
+      }
+      if (baselines.users.get(msg.id) === JSON.stringify(current)) {
+        delete store.users[msg.id];
+        baselines.users.delete(msg.id);
+      }
+      return;
+    }
+    const parsed = JSON.parse(msg.json);
+    if (!parsed || typeof parsed !== 'object') return;
+    const existing = store.users[msg.id];
+    if (!existing) {
+      store.users[msg.id] = parsed;
+      baselines.users.set(msg.id, JSON.stringify(store.users[msg.id]));
+      return;
+    }
+    if (baselines.users.get(msg.id) === JSON.stringify(existing)) {
+      store.users[msg.id] = parsed;
+      baselines.users.set(msg.id, JSON.stringify(store.users[msg.id]));
+    }
+  } catch (err) {
+    console.error('[Store] Ignored a remote Firestore change:', err instanceof Error ? err.message : err);
+  }
+}
+
+setFirestoreRemoteHandler(applyRemoteChange);
+
+function readImportPayload(): Record<string, any> | null {
+  const file = String(process.env.LZ_IMPORT_FILE || '').trim();
+  if (!file) return null;
+  if (!fs.existsSync(file)) {
+    console.warn(`[Store] LZ_IMPORT_FILE does not exist (${file}); not importing.`);
+    return null;
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    throw new Error(`[Store] LZ_IMPORT_FILE is not valid JSON (${file}): ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const obj = parsed?.store && typeof parsed.store === 'object' ? parsed.store : parsed;
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    throw new Error(`[Store] LZ_IMPORT_FILE does not contain a store object (${file}).`);
+  }
+  return obj;
+}
+
+function firestoreBootError(err: unknown): Error {
+  let target = 'unknown';
+  try {
+    const ids = resolveFirebaseTarget();
+    target = `project=${ids.projectId}, database=${ids.databaseId}`;
+  } catch {
+    // keep the original failure
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return new Error(
+    `[Store] Cannot reach Firestore (${target}). Refusing to start and refusing to seed or overwrite data. ` +
+      `On Cloud Run, grant the runtime service account roles/datastore.user. ` +
+      `Locally, set GOOGLE_APPLICATION_CREDENTIALS or FIRESTORE_EMULATOR_HOST. Cause: ${message}`
+  );
+}
+
+async function initFirestoreStore(): Promise<void> {
+  try {
+    await probeFirestoreEmulator();
+    await startFirestoreWorker();
+    const loaded = await firestoreRequestAsync<{ store: Record<string, any> }>(
+      'load',
+      { mirror: process.env.LZ_FIRESTORE_MIRROR !== '0' },
+      20_000
+    );
+    const remoteUsers = loaded?.store?.users && typeof loaded.store.users === 'object' ? loaded.store.users : {};
+    const remoteUserCount = Object.keys(remoteUsers).length;
+    const { store: migrated } = migrateStoreNonDestructively<StoreShape>(
+      loaded.store || {},
+      blankStore,
+      defaultPlatformConfig()
+    );
+    postMigrateNormalizeUsers(migrated);
+    adoptStore(migrated);
+    seedBaselines(store);
+
+    if (remoteUserCount === 0) {
+      const importedRaw = readImportPayload();
+      if (importedRaw) {
+        const { store: imported } = migrateStoreNonDestructively<StoreShape>(
+          importedRaw,
+          blankStore,
+          defaultPlatformConfig()
+        );
+        postMigrateNormalizeUsers(imported);
+        if (Object.keys(imported.users || {}).length === 0) ensureRootAdminAccount(imported);
+        adoptStore(imported);
+        console.log(
+          `[Store] Imported ${Object.keys(store.users).length} users into empty Firestore from ${process.env.LZ_IMPORT_FILE}.`
+        );
+      } else {
+        ensureRootAdminAccount(store);
+        console.log('[Store] Firestore has no users; seeded the root admin account.');
+      }
+      durableReady = true;
+      flushFirestoreNow();
+    } else {
+      const importFile = String(process.env.LZ_IMPORT_FILE || '').trim();
+      if (importFile) {
+        console.log(`[Store] Firestore already has ${remoteUserCount} users; skipping import from ${importFile}.`);
+      }
+      durableReady = true;
+    }
+
+    flushRemoteBuffer();
+    const ids = resolveFirebaseTarget();
+    console.log(
+      `[Store] Firestore ready project=${ids.projectId} database=${ids.databaseId} users=${Object.keys(store.users).length} sessions=${Object.keys(store.sessions).length}.`
+    );
+  } catch (err) {
+    durableReady = false;
+    throw firestoreBootError(err);
+  }
+}
+
+export function getDurableStorageMode(): 'disk' | 'firestore' {
+  return STORAGE_MODE;
+}
+
+export async function initDurableStore(): Promise<void> {
+  if (STORAGE_MODE !== 'firestore') return;
+  if (!firestoreInitPromise) firestoreInitPromise = initFirestoreStore();
+  return firestoreInitPromise;
+}
+
+export async function closeDurableStore(): Promise<void> {
+  try {
+    if (STORAGE_MODE === 'firestore' && durableReady) flushFirestoreNow();
+  } finally {
+    if (STORAGE_MODE === 'firestore') await stopFirestoreWorker();
+  }
+}
+
+function hydrateTokenFromFirestore(token: string): void {
+  if (STORAGE_MODE !== 'firestore' || !durableReady) return;
+  const existing = store.sessions[token];
+  const needSession = !existing;
+  const needUser = Boolean(existing && !store.users[existing.userId]);
+  const needData = Boolean(existing && store.userData[existing.userId] === undefined && !userDataChecked.has(existing.userId));
+  if (!needSession && !needUser && !needData) return;
+  if (needSession && Date.now() < (sessionMissUntil.get(token) || 0)) return;
+
+  let found: { session?: { token: string; userId: string; createdAt: number } | null; user?: any; userData?: any } | null;
+  try {
+    found = firestoreRequestSync('lookup', { token }, 8_000);
+  } catch (err) {
+    console.error('[Store] Firestore session lookup failed:', err instanceof Error ? err.message : err);
+    return;
+  }
+  if (!found?.session) {
+    sessionMissUntil.set(token, Date.now() + 1500);
+    if (existing?.userId) userDataChecked.add(existing.userId);
+    return;
+  }
+
+  sessionMissUntil.delete(token);
+  const remoteSession = {
+    token: String(found.session.token || token),
+    userId: String(found.session.userId || ''),
+    createdAt: Number(found.session.createdAt || Date.now()),
+  };
+  if (remoteSession.token && !store.sessions[remoteSession.token]) {
+    store.sessions[remoteSession.token] = remoteSession;
+    baselines.sessions.set(remoteSession.token, JSON.stringify(store.sessions[remoteSession.token]));
+  }
+  if (found.user?.id && !store.users[found.user.id]) {
+    store.users[found.user.id] = found.user;
+    baselines.users.set(found.user.id, JSON.stringify(store.users[found.user.id]));
+  }
+  if (remoteSession.userId && found.userData && store.userData[remoteSession.userId] === undefined) {
+    store.userData[remoteSession.userId] = found.userData;
+    baselines.userData.set(remoteSession.userId, JSON.stringify(store.userData[remoteSession.userId]));
+  }
+  if (remoteSession.userId) userDataChecked.add(remoteSession.userId);
+}
 
 export function flushStoreToDiskSync(snapshotReason?: string): void {
+  if (STORAGE_MODE === 'firestore') {
+    if (!durableReady) return;
+    flushFirestoreNow(snapshotReason);
+    return;
+  }
   saveQueued = false;
   try {
     const now = Date.now();
@@ -666,6 +1130,11 @@ export function flushStoreToDiskSync(snapshotReason?: string): void {
 
 let saveQueued = false;
 export function persistStore(opts?: { immediate?: boolean; snapshotReason?: string }): void {
+  if (STORAGE_MODE === 'firestore') {
+    if (!durableReady) return;
+    persistStoreFirestore(opts);
+    return;
+  }
   storeDirty = true;
   if (opts?.immediate || opts?.snapshotReason) {
     flushStoreToDiskSync(opts?.snapshotReason);
@@ -680,6 +1149,15 @@ export function persistStore(opts?: { immediate?: boolean; snapshotReason?: stri
 
 // Background safety flush every 15s in case any in-memory mutation is pending
 const safetyFlushTimer = setInterval(() => {
+  if (STORAGE_MODE === 'firestore') {
+    if (!durableReady || !storeDirty) return;
+    try {
+      flushFirestoreNow();
+    } catch {
+      // Retry on the next tick. Startup already refused to listen if the first load failed.
+    }
+    return;
+  }
   if (storeDirty || walPendingCount > 0) {
     flushStoreToDiskSync();
   }
@@ -727,6 +1205,7 @@ function makeUniqueInviteCode(username: string): string {
 
 export function getUserByToken(token?: string | null): AccountRecord | undefined {
   if (!token) return undefined;
+  hydrateTokenFromFirestore(token);
   const sess = store.sessions[token];
   if (!sess) return undefined;
   const user = store.users[sess.userId];

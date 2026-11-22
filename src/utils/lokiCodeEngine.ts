@@ -89,22 +89,6 @@ export const LANGUAGE_IDEAS_POOL: Record<string, CodeIdea[]> = {
     { label: '🔐 SHA & Token Vault', prompt: 'Build a C# security vault manager with salted hashing, role permissions, and audit log formatting' },
     { label: '📊 Financial Amortization', prompt: 'Create a C# loan & compound investment calculator printing a full amortization schedule' },
   ],
-  rust: [
-    { label: '🦀 Zero-Copy Tokenizer', prompt: 'Write an idiomatic Rust zero-copy text tokenizer and word-frequency analyzer with microsecond timing' },
-    { label: '🧭 Dijkstra Graph Router', prompt: 'Build a Rust BinaryHeap Dijkstra shortest-path router on a weighted city graph with path reconstruction' },
-    { label: '🔐 Safe LRU Cache Engine', prompt: 'Create a clean, safe Rust generic LRU cache with hit/miss metrics and unit benchmark output' },
-    { label: '⚡ Concurrent Prime Sieve', prompt: 'Write a Rust parallel segmented prime sieve using std::thread with throughput statistics' },
-    { label: '📊 Financial Monte Carlo', prompt: 'Build a Rust deterministic PRNG Monte Carlo portfolio risk simulator with percentile table' },
-    { label: '🧩 Expression AST Evaluator', prompt: 'Write a Rust recursive-descent math expression parser and evaluator with Result error handling' },
-  ],
-  go: [
-    { label: '🐹 Worker Pool Pipeline', prompt: 'Build an idiomatic Go concurrent worker pool using goroutines, channels, and sync.WaitGroup with latency stats' },
-    { label: '⚡ Token Bucket Rate Limiter', prompt: 'Create a Go thread-safe token bucket rate limiter and stress-test it across concurrent simulated clients' },
-    { label: '🗂️ In-Memory KV Store', prompt: 'Write a Go thread-safe TTL key-value cache with background expiry stats and formatted benchmark table' },
-    { label: '🧭 Shortest-Path Grid BFS', prompt: 'Build a Go BFS/A* maze solver that renders the obstacle grid and optimal path in ASCII' },
-    { label: '📊 Streaming Log Analyzer', prompt: 'Create a Go structured HTTP log parser and percentile latency (p50/p95/p99) aggregator' },
-    { label: '🔐 Merkle Tree Verifier', prompt: 'Write a Go SHA-256 Merkle tree builder and cryptographic inclusion proof verifier' },
-  ],
 };
 
 export function getCuratedLanguageIdeas(lang: string, offset = 0): CodeIdea[] {
@@ -139,10 +123,6 @@ export function detectCodeInputRequirement(lang: string, code: string): boolean 
       return /\bprocess\.stdin\b|\breadline\b|\bprompt\s*\(/.test(src);
     case 'lsl':
       return /\bllListen\s*\(|\btouch_start\s*\(/.test(src);
-    case 'rust':
-      return /\bstdin\s*\(\s*\)|\bread_line\s*\(/.test(src);
-    case 'go':
-      return /\bbufio\.New(?:Scanner|Reader)\s*\(\s*os\.Stdin|\bfmt\.Scan(?:f|ln)?\s*\(/.test(src);
     default:
       return false;
   }

@@ -1,0 +1,48 @@
+/* Lokizenith AI — Plugins settings, @mention picker, and confirm cards */
+.lz-plug-intro{color:var(--dim,#a1a1aa);font-size:.85rem;line-height:1.5;margin:0 0 16px}
+.lz-plug-intro kbd{display:inline-block;padding:1px 6px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);font-size:.75rem}
+.lz-plug-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.lz-plug-card{position:relative;display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:18px;background:rgba(8,10,16,.72);border:1px solid rgba(255,255,255,.08);box-shadow:0 10px 28px rgba(0,0,0,.28);overflow:hidden;transition:transform .18s,border-color .18s,box-shadow .18s}
+.lz-plug-card:hover{transform:translateY(-2px);border-color:rgba(var(--acc-rgb,0,255,156),.35);box-shadow:0 16px 36px rgba(0,0,0,.4)}
+.lz-plug-card::before{content:"";position:absolute;inset:0 auto auto 0;width:100%;height:3px;background:var(--plug-color,#00ff9c);opacity:.85}
+.lz-plug-top{display:flex;align-items:center;gap:12px}
+.lz-plug-logo{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:#fff;border:1px solid rgba(255,255,255,.12);flex-shrink:0;overflow:hidden}
+.lz-plug-logo.dark{background:#111}
+.lz-plug-logo img{width:28px;height:28px;object-fit:contain}
+.lz-plug-id{flex:1;min-width:0}
+.lz-plug-id b{display:block;font-size:.98rem;font-weight:750}
+.lz-plug-id small{display:block;color:var(--dim);font-size:.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lz-plug-desc{font-size:.8rem;color:var(--muted,#c4c4cc);line-height:1.45;min-height:2.3em}
+.lz-plug-actions{display:flex;align-items:center;gap:8px;margin-top:auto}
+.lz-plug-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:99px;font-size:.7rem;font-weight:700;letter-spacing:.02em}
+.lz-plug-pill.on{background:rgba(16,185,129,.18);color:#6ee7b7;border:1px solid rgba(16,185,129,.35)}
+.lz-plug-pill.off{background:rgba(255,255,255,.06);color:#a1a1aa;border:1px solid rgba(255,255,255,.1)}
+.lz-plug-pill.setup{background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.35)}
+.lz-plug-btn{margin-left:auto;border:0;border-radius:11px;padding:8px 13px;font-weight:700;font-size:.8rem;cursor:pointer;transition:.15s}
+.lz-plug-btn.connect{background:linear-gradient(180deg,rgba(var(--acc-rgb,0,255,156),.95),rgba(var(--acc-rgb,0,255,156),.7));color:#04140c}
+.lz-plug-btn.connect:hover{filter:brightness(1.08)}
+.lz-plug-btn.disconnect{background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.35)}
+.lz-plug-btn[disabled]{opacity:.55;cursor:default}
+.lz-plug-setup{font-size:.72rem;color:#fbbf24;line-height:1.4}
+
+.plugin-menu{position:absolute;left:16px;right:16px;bottom:calc(100% + 10px);max-width:540px;margin:0 auto;background:rgba(13,10,26,.97);backdrop-filter:blur(20px);border:1px solid rgba(0,255,156,.35);border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.65),0 0 30px rgba(0,255,156,.15);z-index:121;overflow:hidden;animation:pop .2s var(--ease,ease)}
+.plugin-menu-head{padding:9px 14px;font-size:.74rem;font-weight:700;color:var(--muted);border-bottom:1px solid rgba(255,255,255,.08);background:rgba(0,255,156,.08);letter-spacing:.02em}
+.plugin-menu-list{max-height:280px;overflow-y:auto;padding:6px;display:grid;gap:4px}
+.plugin-opt{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:12px;cursor:pointer;border:1px solid transparent;background:transparent;color:inherit;text-align:left;width:100%;font:inherit}
+.plugin-opt:hover,.plugin-opt.active{background:linear-gradient(90deg,rgba(0,255,156,.18),rgba(56,189,248,.12));border-color:rgba(0,255,156,.35)}
+.plugin-opt img{width:26px;height:26px;border-radius:7px;background:#fff;padding:3px;flex-shrink:0}
+.plugin-opt img.dark{background:#111}
+.plugin-opt b{display:block;font-size:.88rem}
+.plugin-opt small{display:block;font-size:.74rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plugin-opt .tag{margin-left:auto;font-size:.68rem;font-weight:700;padding:2px 7px;border-radius:99px;background:rgba(0,255,156,.18);color:#6ee7b7;flex-shrink:0}
+.plugin-opt .tag.off{background:rgba(255,255,255,.08);color:#a1a1aa}
+
+.loki-plugin-card{margin:10px 0;padding:16px;border-radius:16px;background:rgba(12,10,22,.9);border:1px solid rgba(0,255,156,.28);box-shadow:0 12px 28px rgba(0,0,0,.3)}
+.loki-plugin-card .lpc-top{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.loki-plugin-card .lpc-top img{width:22px;height:22px;border-radius:6px;background:#fff;padding:2px}
+.loki-plugin-card h4{margin:0;font-size:.95rem}
+.loki-plugin-card pre{white-space:pre-wrap;font-size:.82rem;line-height:1.45;background:rgba(0,0,0,.35);padding:10px 12px;border-radius:10px;margin:8px 0 12px}
+.loki-plugin-card .lpc-btns{display:flex;gap:8px}
+.loki-plugin-card .lpc-ok{border:0;border-radius:11px;padding:8px 14px;font-weight:700;background:#00ff9c;color:#04140c;cursor:pointer}
+.loki-plugin-card .lpc-no{border:0;border-radius:11px;padding:8px 14px;font-weight:700;background:rgba(255,255,255,.08);color:#eee;cursor:pointer}
+.loki-plugin-card.done{opacity:.85}

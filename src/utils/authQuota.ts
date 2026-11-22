@@ -25,6 +25,8 @@ export type AdminModuleId =
   | 'directory'
   | 'access'
   | 'xray'
+  | 'reports'
+  | 'knowledge'
   | 'soundboard'
   | 'broadcast'
   | 'leaderboards'
@@ -38,6 +40,8 @@ export const ALL_ADMIN_MODULES: AdminModuleId[] = [
   'directory',
   'access',
   'xray',
+  'reports',
+  'knowledge',
   'soundboard',
   'broadcast',
   'leaderboards',

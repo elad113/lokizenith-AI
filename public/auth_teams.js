@@ -81,8 +81,50 @@ const state = {
   banTimer: 0,
   presenceTimer: 0,
   inspectBackup: savedInspectBackup,
-  platformConfig: null
+  platformConfig: null,
+  guest: null
 };
+
+/* ---------------- Guest trial (7,500 tokens before sign up, enforced on the server) ---------------- */
+const GUEST_LIMIT = 7500;
+let guestRefreshTimer = 0;
+function isGuest(){ return !state.user && !state.token; }
+function applyGuestStatus(j){
+  if (!j || typeof j !== 'object') return;
+  const limit = Number(j.limit) || GUEST_LIMIT;
+  const remaining = Math.max(0, Math.min(limit, Number(j.remaining)));
+  state.guest = { limit, remaining: Number.isFinite(remaining) ? remaining : limit };
+  renderGuestChrome();
+  renderUsageBar();
+}
+function refreshGuestStatus(delay = 0){
+  clearTimeout(guestRefreshTimer);
+  guestRefreshTimer = setTimeout(() => {
+    if (!isGuest()) return;
+    fetch('/api/guest/status', { credentials: 'same-origin' }).then(r => r.json()).then(applyGuestStatus).catch(() => {});
+  }, delay);
+}
+function renderGuestChrome(){
+  const guest = isGuest();
+  document.body.classList.toggle('lz-guest', guest);
+  const box = $('#guestAuthBtns');
+  if (box) box.hidden = !guest;
+  const pill = $('#guestTokensPill');
+  if (pill && guest){
+    const rem = state.guest ? state.guest.remaining : GUEST_LIMIT;
+    pill.textContent = rem > 0 ? `${rem.toLocaleString()} free tokens left` : 'Free trial used';
+    pill.classList.toggle('empty', rem <= 0);
+  }
+  const close = $('#authCloseBtn');
+  if (close) close.hidden = !guest;
+}
+function enterGuestMode(){
+  state.guest = state.guest || { limit: GUEST_LIMIT, remaining: GUEST_LIMIT };
+  hideAuthOverlay();
+  renderGuestChrome();
+  renderUsageBar();
+  refreshGuestStatus(0);
+}
 
 function getClientDeviceHints(){
   try {
@@ -157,19 +199,19 @@ const usage = {
     return Boolean(state.user.isUnlimited || String(state.user.username || '').trim().toLowerCase() === 'oron');
   },
   canUse(){
-    if (!state.user) return true;
+    if (!state.user) return state.guest ? state.guest.remaining > 0 : true;
     if (this.isUnlimited()) return true;
     this.checkAutoResetLocally();
     return (state.user.tokensRemaining ?? 0) > 0;
   },
   remaining(){
-    if (!state.user) return DAILY_LIMIT;
+    if (!state.user) return state.guest ? state.guest.remaining : DAILY_LIMIT;
     if (this.isUnlimited()) return Number.MAX_SAFE_INTEGER;
     this.checkAutoResetLocally();
     return Math.max(0, Math.floor(state.user.tokensRemaining ?? DAILY_LIMIT));
   },
   limit(){
-    if (!state.user) return DAILY_LIMIT;
+    if (!state.user) return state.guest ? state.guest.limit : DAILY_LIMIT;
     return state.user.tokenLimitEffective || state.user.tokenLimitBase || DAILY_LIMIT;
   },
   percent(){
@@ -196,7 +238,14 @@ const usage = {
     }
   },
   consume(tokens){
-    if (!state.user) return;
+    if (!state.user){
+      if (state.guest){
+        state.guest.remaining = Math.max(0, state.guest.remaining - Math.max(1, Math.floor(tokens || 80)));
+        renderGuestChrome(); renderUsageBar();
+        refreshGuestStatus(700);
+      }
+      return;
+    }
     const amt = Math.max(1, Math.floor(tokens || 80));
     if (!this.isUnlimited()){
       state.user.tokensRemaining = Math.max(0, (state.user.tokensRemaining ?? DAILY_LIMIT) - amt);
@@ -243,6 +292,13 @@ function renderUsageBar(){
   const pct = usage.percent();
 
   if (pctEl) pctEl.textContent = `${pct}%`;
+  if (!state.user){
+    if (fillEl){ fillEl.style.width = `${pct}%`; fillEl.classList.remove('boosted', 'warn', 'low'); if (pct <= 15) fillEl.classList.add('low'); else if (pct <= 40) fillEl.classList.add('warn'); }
+    if (trackEl) trackEl.setAttribute('aria-valuenow', String(pct));
+    if (tokEl) tokEl.textContent = `${rem.toLocaleString()} / ${effectiveMax.toLocaleString()}`;
+    if (rstEl) rstEl.textContent = 'Guest trial · sign up for 25k / 6h';
+    return;
+  }
   if (fillEl){
     fillEl.style.width = `${pct}%`;
     fillEl.classList.remove('warn', 'low', 'boosted');
@@ -266,7 +322,30 @@ setInterval(() => {
   }
 }, 1000);
 
+function createGuestLimitBlock(message){
+  const wrap = document.createElement('div');
+  wrap.className = 'lz-limit-card lz-guest-limit';
+  wrap.innerHTML = `
+    <div class="lz-lim-head">
+      <span class="lz-lim-ic">✨</span>
+      <div>
+        <b>Enjoying Lokizenith? Create your free account</b>
+        <p>${esc(message || "You've used your 7,500 free guest tokens.")}</p>
+      </div>
+    </div>
+    <div class="lz-lim-sub">Free accounts get 25,000 tokens every 6 hours, saved chats on every device, plugins, images and more.</div>
+    <div class="lz-lim-btns">
+      <button type="button" class="btn-primary lz-lim-btn" data-guest="register">🚀 Sign up free</button>
+      <button type="button" class="btn-ghost lz-lim-btn" data-guest="login">Sign in</button>
+    </div>
+  `;
+  wrap.querySelector('[data-guest="register"]').onclick = () => openAuthOverlay('register');
+  wrap.querySelector('[data-guest="login"]').onclick = () => openAuthOverlay('login');
+  return wrap;
+}
+
 function createLimitBlock(message){
+  if (!state.user) return createGuestLimitBlock(/guest|sign up|account/i.test(String(message || '')) ? message : '');
   const wrap = document.createElement('div');
   wrap.className = 'lz-limit-card';
   wrap.innerHTML = `
@@ -633,7 +712,8 @@ function updateAccount(acc){
   if (window.LokiBenches && $('#benchesView')?.classList.contains('active')){
     try { window.LokiBenches.render(); } catch(_){}
   }
-  if ((prevAvatar !== avatarSrc || prevDisplay !== dispName) && A()?.renderMessages){
+  const justFinishedAi = (Date.now() - Number(window.__lzLastTurnFinishedAt || 0)) < 8000;
+  if ((prevAvatar !== avatarSrc || prevDisplay !== dispName) && A()?.renderMessages && !A()?.state?.busy && !justFinishedAi){
     try { A().renderMessages(); } catch(_){}
   }
   try { syncMaintenanceOverlay(); } catch(_){}
@@ -672,16 +752,22 @@ function getPlanTagHtml(tier = 'free', extraCls = '', ownerUsername = ''){
 }
 
 async function consumeFeatureQuota(feature, amount = 1, turnId = ''){
+  const ac = (typeof AbortController === 'function') ? new AbortController() : null;
+  const timer = setTimeout(() => { try { ac && ac.abort(); } catch(_){} }, 2500);
   try {
     const res = await api('/api/quota/track-feature', {
       method: 'POST',
-      body: JSON.stringify({ feature, amount, ...(turnId ? { turnId } : {}) })
+      body: JSON.stringify({ feature, amount, ...(turnId ? { turnId } : {}) }),
+      signal: ac ? ac.signal : undefined
     });
     if (res && res.account){
       updateAccount(res.account);
     }
     return res;
   } catch (err) {
+    if (err?.name === 'AbortError' || /aborted|The operation was aborted/i.test(String(err?.message || ''))){
+      return { ok: false, allowed: true, timedOut: true, error: 'Quota check timed out' };
+    }
     if (err?.data?.account){
       updateAccount(err.data.account);
     }
@@ -694,6 +780,8 @@ async function consumeFeatureQuota(feature, amount = 1, turnId = ''){
       status: err?.data?.status || null,
       account: err?.data?.account || null
     };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -734,6 +822,7 @@ function clearSessionUI(){
   if ($('#notifBtn')) $('#notifBtn').hidden = true;
   if ($('#inviteTopBtn')) $('#inviteTopBtn').hidden = true;
   if ($('#lzInviteBtn')) $('#lzInviteBtn').hidden = true;
+  enterGuestMode();
   openAuthOverlay('login');
 }
 
@@ -821,6 +910,7 @@ function openAuthOverlay(mode = 'login'){
 function hideAuthOverlay(){
   const ov = $('#authOverlay');
   if (ov) ov.hidden = true;
+  renderGuestChrome();
   unlockAuthScroll();
   if (window.LZRoute && typeof LZRoute.hydrate === 'function') LZRoute.hydrate();
 }
@@ -1050,11 +1140,12 @@ async function flushLiveSyncNow(useBeacon = false){
     syncDirtyFlag = false;
     clearTimeout(syncRetryTimer);
     try { localStorage.removeItem(SYNC_OUTBOX_KEY); } catch(_){}
-    if (res?.data && A()?.applyServerUserData){
+    if (res?.data && A()?.applyServerUserData && !A()?.state?.busy && !(A()?.state?.turns?.size > 0)){
+      const justFinishedAi = (Date.now() - Number(window.__lzLastTurnFinishedAt || 0)) < 8000;
       const localConvs = A()?.state?.convs || [];
       const localMap = new Map(localConvs.map(c => [c.id, Number(c.updated || 0)]));
       const serverHasMore = Array.isArray(res.data.convs) && res.data.convs.some(sc => !localMap.has(sc.id) || Number(sc.updated || 0) > (localMap.get(sc.id) || 0));
-      if (serverHasMore){
+      if (serverHasMore && !justFinishedAi){
         await A().applyServerUserData(res.data);
       }
     }
@@ -1110,7 +1201,7 @@ function scheduleSync(immediate = false){
   }
   state.syncTimer = setTimeout(() => {
     flushLiveSyncNow(false);
-  }, 350);
+  }, 8000);
 }
 
 window.addEventListener('online', () => { flushOutboxIfNeeded(); if (syncDirtyFlag) flushLiveSyncNow(false); });
@@ -1786,6 +1877,8 @@ function connectWS(){
 
     if (msg.type === 'auth:ok' || msg.type === 'sync:state'){
       applyRoomSync(msg);
+    } else if (msg.type === 'chat:gen'){
+      if (A() && typeof A().onGenEvent === 'function') A().onGenEvent(msg);
     } else if (msg.type === 'user:data_updated' && msg.data){
       if (msg.sourceTabId !== TAB_ID){
         if (A() && typeof A().applyServerUserData === 'function') A().applyServerUserData(msg.data);
@@ -2287,11 +2380,16 @@ let adminMaintAiBusy = false;
 let adminAccessTarget = '';
 let adminAccessLevelDraft = 'partial';
 let adminAccessPermsDraft = ['directory', 'leaderboards'];
+let adminReportsFilter = 'all';
+let adminReportsSearch = '';
+let adminKnowledgeSearch = '';
 
 const ADMIN_MODULES_META = [
   { id: 'directory', icon: '👥', name: 'Accounts Directory', desc: 'View accounts, reset usage, gift tokens, and manage users' },
   { id: 'access', icon: '🔐', name: 'Access & Roles', desc: 'Grant or revoke Partial / Full Admin Panel access' },
   { id: 'xray', icon: '🔭', name: 'Account X-Ray & Inspect', desc: 'Live-inspect accounts and read AI chat transcripts' },
+  { id: 'reports', icon: '🚩', name: 'AI Reports History', desc: 'Review user-submitted reports on AI messages, resolve or remove them' },
+  { id: 'knowledge', icon: '🧠', name: 'AI Learned Knowledge', desc: 'Inspect, curate, and teach facts in the AI self-learning knowledge base' },
   { id: 'soundboard', icon: '🎙', name: 'Live Voice PA & Soundboard', desc: 'Record 60s voice PA and play sound effects to all users' },
   { id: 'broadcast', icon: '📢', name: 'Broadcast & Scheduler', desc: 'Send or schedule global system announcements' },
   { id: 'leaderboards', icon: '🏆', name: 'Analytics & Leaderboards', desc: 'View top token users, lifetime stats, and referrals' },
@@ -2333,6 +2431,8 @@ function patchAdminModalInPlace(){
   const badgeMap = {
     directory: allUsers.length,
     access: `${adminUsersCount} Staff`,
+    reports: ov.openReportsCount ?? (ov.reports || []).filter(r => r.status !== 'resolved').length,
+    knowledge: ov.knowledgeStats?.totalFacts ?? (ov.knowledgeEntries || []).length,
     broadcast: (ov.scheduledBroadcasts || []).length || '',
     codes: (ov.promoCodes?.customCodes || []).length + 5,
     security: (ov.auditLogs || []).length,
@@ -2633,6 +2733,8 @@ function renderAdminDashboardModal(){
     { id: 'directory', icon: '👥', label: 'Accounts Directory', badge: allUsers.length },
     { id: 'access', icon: '🔐', label: 'Access & Roles', badge: `${adminUsersCount} Staff` },
     { id: 'xray', icon: '🔭', label: 'Account X-Ray & Chats', badge: adminXrayUser ? `@${adminXrayUser}` : 'Live' },
+    { id: 'reports', icon: '🚩', label: 'AI Reports History', badge: ov.openReportsCount ?? (ov.reports || []).filter(r => r.status !== 'resolved').length },
+    { id: 'knowledge', icon: '🧠', label: 'AI Learned Knowledge', badge: ov.knowledgeStats?.totalFacts ?? (ov.knowledgeEntries || []).length },
     { id: 'soundboard', icon: '🎙', label: 'Live Voice PA & Soundboard', badge: '12 FX' },
     { id: 'broadcast', icon: '📢', label: 'Broadcast & Scheduler', badge: (ov.scheduledBroadcasts || []).length || null },
     { id: 'leaderboards', icon: '🏆', label: 'Analytics & Leaderboards', badge: 'Top' },
@@ -4262,10 +4364,145 @@ function renderAdminDashboardModal(){
     `;
   };
 
+  const renderReportsTab = () => {
+    const allReports = Array.isArray(ov.reports) ? ov.reports : [];
+    const rq = adminReportsSearch.trim().toLowerCase();
+    const filtered = allReports.filter(r => {
+      if (adminReportsFilter === 'open' && r.status === 'resolved') return false;
+      if (adminReportsFilter === 'resolved' && r.status !== 'resolved') return false;
+      if (rq){
+        const hay = `${r.reason || ''} ${r.category || ''} ${r.reporterUsername || ''} ${r.userPrompt || ''} ${r.aiResponse || ''}`.toLowerCase();
+        if (!hay.includes(rq)) return false;
+      }
+      return true;
+    });
+    const openCnt = allReports.filter(r => r.status !== 'resolved').length;
+    const resCnt = allReports.length - openCnt;
+    return `
+      <div class="adm-mod-wrap">
+        <div class="adm-section-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+          <div>
+            <h3 style="margin:0;">🚩 AI Message Reports History</h3>
+            <small class="muted">Every report submitted by users on AI answers — review reasons, mark resolved, or remove</small>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="search" id="admReportsSearch" value="${esc(adminReportsSearch)}" placeholder="Search reports…" style="min-width:190px;padding:7px 11px;border-radius:10px;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.35);color:#fff;">
+            <button type="button" class="adm-fbtn ${adminReportsFilter === 'all' ? 'on' : ''}" data-rf="all">All (${allReports.length})</button>
+            <button type="button" class="adm-fbtn ${adminReportsFilter === 'open' ? 'on' : ''}" data-rf="open">🔴 Open (${openCnt})</button>
+            <button type="button" class="adm-fbtn ${adminReportsFilter === 'resolved' ? 'on' : ''}" data-rf="resolved">✅ Resolved (${resCnt})</button>
+            <button type="button" class="btn-ghost" id="admReportsRefresh">↻ Refresh</button>
+          </div>
+        </div>
+        ${filtered.length === 0 ? `
+          <div class="adm-card" style="text-align:center;padding:34px 20px;">
+            <div style="font-size:2rem;margin-bottom:8px;">🛡️</div>
+            <b>No AI reports match this filter</b>
+            <p class="muted" style="margin:6px 0 0;">When users click the Report button under an AI response, their report history will appear here live.</p>
+          </div>
+        ` : `
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            ${filtered.map(r => `
+              <div class="adm-card" style="padding:14px 16px;border-left:3px solid ${r.status === 'resolved' ? '#10b981' : '#f43f5e'};">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span class="adm-role-badge ${r.status === 'resolved' ? 'full' : 'partial'}" style="${r.status === 'resolved' ? '' : 'background:rgba(244,63,94,.2);color:#fda4af;border-color:rgba(244,63,94,.4);'}">${r.status === 'resolved' ? '✅ RESOLVED' : '🚩 OPEN'}</span>
+                    <span style="font-size:.78rem;padding:2px 8px;border-radius:6px;background:rgba(255,255,255,.08);color:#e2e8f0;font-weight:600;">${esc(r.category || 'other')}</span>
+                    <b>@${esc(r.reporterUsername || 'Guest')}</b>
+                    <small class="muted">· ${new Date(r.createdAt || Date.now()).toLocaleString()} · Model: ${esc(r.model || 'lokizenith')}</small>
+                  </div>
+                  <div style="display:flex;gap:6px;">
+                    <button type="button" class="btn-ghost adm-rep-toggle" data-repid="${esc(r.id)}" data-next="${r.status === 'resolved' ? 'open' : 'resolved'}">
+                      ${r.status === 'resolved' ? '↺ Reopen' : '✓ Mark Resolved'}
+                    </button>
+                    <button type="button" class="danger-btn adm-rep-del" data-repid="${esc(r.id)}" style="padding:5px 10px;font-size:.78rem;">🗑 Delete</button>
+                  </div>
+                </div>
+                <div style="background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.22);border-radius:10px;padding:9px 12px;margin-bottom:8px;" dir="auto">
+                  <small style="color:#fda4af;font-weight:700;display:block;margin-bottom:3px;">USER REPORT NOTE:</small>
+                  <div style="color:#fff;white-space:pre-wrap;font-size:.9rem;">${esc(r.reason)}</div>
+                </div>
+                ${r.userPrompt ? `
+                  <div style="font-size:.82rem;color:#cbd5e1;margin-bottom:6px;" dir="auto">
+                    <b style="color:#7dffcf;">User Prompt:</b> ${esc(String(r.userPrompt).slice(0, 320))}
+                  </div>
+                ` : ''}
+                ${r.aiResponse ? `
+                  <details style="font-size:.82rem;color:#94a3b8;">
+                    <summary style="cursor:pointer;color:#e2e8f0;font-weight:600;">View Reported AI Message (${String(r.aiResponse).length} chars)</summary>
+                    <div style="margin-top:6px;padding:10px;background:rgba(0,0,0,.35);border-radius:8px;white-space:pre-wrap;max-height:220px;overflow:auto;color:#e2e8f0;" dir="auto">${esc(String(r.aiResponse).slice(0, 1500))}</div>
+                  </details>
+                ` : ''}
+              </div>
+            `).join('')}
+          </div>
+        `}
+      </div>
+    `;
+  };
+
+  const renderKnowledgeTab = () => {
+    const entries = Array.isArray(ov.knowledgeEntries) ? ov.knowledgeEntries : [];
+    const ks = ov.knowledgeStats || { totalFacts: entries.length, totalUses: 0, topTopics: [] };
+    const kq = adminKnowledgeSearch.trim().toLowerCase();
+    const filtered = entries.filter(e => {
+      if (!kq) return true;
+      return `${e.topic || ''} ${e.fact || ''} ${(e.tags || []).join(' ')} ${e.sourceUser || ''}`.toLowerCase().includes(kq);
+    });
+    return `
+      <div class="adm-mod-wrap">
+        <div class="adm-section-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+          <div>
+            <h3 style="margin:0;">🧠 AI Self-Learning Knowledge Base</h3>
+            <small class="muted">Lokizenith automatically learns verified non-personal insights from user chats and recalls them in future conversations</small>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <span class="adm-role-badge full">📚 ${ks.totalFacts || entries.length} Learned Facts</span>
+            <span class="adm-role-badge partial">⚡ ${ks.totalUses || 0} AI Recalls</span>
+            <input type="search" id="admKnowSearch" value="${esc(adminKnowledgeSearch)}" placeholder="Search knowledge…" style="min-width:180px;padding:7px 11px;border-radius:10px;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.35);color:#fff;">
+          </div>
+        </div>
+        <form class="adm-card" id="admTeachFactForm" style="padding:14px 16px;margin-bottom:14px;display:grid;gap:8px;">
+          <b>➕ Teach AI a Verified Fact Manually</b>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input type="text" id="admTeachTopic" placeholder="Topic (e.g. Lokizenith AI, Physics, React…)" dir="auto" style="flex:1;min-width:180px;padding:8px 10px;border-radius:9px;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.35);color:#fff;">
+            <input type="text" id="admTeachTags" placeholder="Tags (comma-separated, optional)" dir="auto" style="flex:1;min-width:160px;padding:8px 10px;border-radius:9px;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.35);color:#fff;">
+          </div>
+          <textarea id="admTeachFact" rows="2" placeholder="Write a factual statement the AI should remember across all users…" dir="auto" style="padding:8px 10px;border-radius:9px;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.35);color:#fff;"></textarea>
+          <div><button type="submit" class="btn-primary" style="padding:7px 14px;">🧠 Save to AI Knowledge Base</button></div>
+        </form>
+        ${filtered.length === 0 ? `
+          <div class="adm-card" style="text-align:center;padding:28px 18px;">
+            <div style="font-size:1.8rem;margin-bottom:6px;">🌱</div>
+            <b>Knowledge base is ready and learning!</b>
+            <p class="muted" style="margin:6px 0 0;">As users chat with Lokizenith, clean non-private insights will automatically be distilled and stored here.</p>
+          </div>
+        ` : `
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px;">
+            ${filtered.map(k => `
+              <div class="adm-card" style="padding:12px 14px;display:flex;flex-direction:column;gap:6px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                  <b style="color:#7dffcf;" dir="auto">${esc(k.topic)}</b>
+                  <button type="button" class="btn-ghost adm-know-del" data-kid="${esc(k.id)}" style="padding:3px 8px;font-size:.74rem;">🗑</button>
+                </div>
+                <div style="font-size:.86rem;color:#e2e8f0;line-height:1.45;" dir="auto">${esc(k.fact)}</div>
+                <div style="display:flex;align-items:center;justify-content:space-between;font-size:.74rem;color:#94a3b8;margin-top:auto;padding-top:4px;">
+                  <span>Source: ${esc(k.sourceUser || 'Community')} · Recalled ${k.uses || 0}×</span>
+                  <span>${new Date(k.updatedAt || k.createdAt || Date.now()).toLocaleDateString()}</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      </div>
+    `;
+  };
+
   let activeModuleHtml = '';
   if (adminActiveTab === 'directory') activeModuleHtml = renderDirectoryTab();
   else if (adminActiveTab === 'access') activeModuleHtml = renderAccessTab();
   else if (adminActiveTab === 'xray') activeModuleHtml = renderXrayTab();
+  else if (adminActiveTab === 'reports') activeModuleHtml = renderReportsTab();
+  else if (adminActiveTab === 'knowledge') activeModuleHtml = renderKnowledgeTab();
   else if (adminActiveTab === 'soundboard') activeModuleHtml = renderSoundboardTab();
   else if (adminActiveTab === 'broadcast') activeModuleHtml = renderBroadcastTab();
   else if (adminActiveTab === 'leaderboards') activeModuleHtml = renderLeaderboardsTab();
@@ -4737,6 +4974,90 @@ function renderAdminDashboardModal(){
     b.onclick = () => {
       adminXrayConvIdx = Number(b.dataset.xconv || 0);
       renderAdminDashboardModal();
+    };
+  });
+
+  // Reports Tab bindings
+  const repSearch = $('#admReportsSearch', body);
+  if (repSearch){
+    repSearch.oninput = () => {
+      adminReportsSearch = repSearch.value;
+      const pos = repSearch.selectionStart;
+      renderAdminDashboardModal();
+      const nInp = $('#admReportsSearch', body);
+      if (nInp){ nInp.focus(); try { nInp.setSelectionRange(pos, pos); } catch(_){} }
+    };
+  }
+  $$('.adm-fbtn[data-rf]', body).forEach(b => {
+    b.onclick = () => { adminReportsFilter = b.dataset.rf || 'all'; renderAdminDashboardModal(); };
+  });
+  $('#admReportsRefresh', body)?.addEventListener('click', async () => {
+    await fetchAdminOverview();
+    renderAdminDashboardModal();
+    toast('✓ Reports refreshed', 'ok');
+  });
+  $$('.adm-rep-toggle', body).forEach(b => {
+    b.onclick = async () => {
+      try {
+        await api(`/api/admin/reports/${encodeURIComponent(b.dataset.repid)}/status`, {
+          method: 'POST',
+          body: JSON.stringify({ status: b.dataset.next || 'resolved' })
+        });
+        toast(b.dataset.next === 'resolved' ? '✅ Report marked resolved' : '↺ Report reopened', 'ok');
+        await fetchAdminOverview();
+        renderAdminDashboardModal();
+      } catch(err){ toast(err.message, 'err'); }
+    };
+  });
+  $$('.adm-rep-del', body).forEach(b => {
+    b.onclick = async () => {
+      try {
+        await api(`/api/admin/reports/${encodeURIComponent(b.dataset.repid)}`, { method: 'DELETE' });
+        toast('🗑 Report deleted', 'ok');
+        await fetchAdminOverview();
+        renderAdminDashboardModal();
+      } catch(err){ toast(err.message, 'err'); }
+    };
+  });
+
+  // Knowledge Base Tab bindings
+  const knowSearch = $('#admKnowSearch', body);
+  if (knowSearch){
+    knowSearch.oninput = () => {
+      adminKnowledgeSearch = knowSearch.value;
+      const pos = knowSearch.selectionStart;
+      renderAdminDashboardModal();
+      const nInp = $('#admKnowSearch', body);
+      if (nInp){ nInp.focus(); try { nInp.setSelectionRange(pos, pos); } catch(_){} }
+    };
+  }
+  const teachForm = $('#admTeachFactForm', body);
+  if (teachForm){
+    teachForm.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const topic = ($('#admTeachTopic', body)?.value || '').trim();
+      const tags = ($('#admTeachTags', body)?.value || '').trim();
+      const fact = ($('#admTeachFact', body)?.value || '').trim();
+      if (!topic || fact.length < 15){
+        toast('Please enter a topic and a fact (at least 15 chars).', 'err');
+        return;
+      }
+      try {
+        await api('/api/admin/knowledge', { method: 'POST', body: JSON.stringify({ topic, tags, fact }) });
+        toast('🧠 Saved fact to AI Knowledge Base!', 'ok');
+        await fetchAdminOverview();
+        renderAdminDashboardModal();
+      } catch(err){ toast(err.message, 'err'); }
+    };
+  }
+  $$('.adm-know-del', body).forEach(b => {
+    b.onclick = async () => {
+      try {
+        await api(`/api/admin/knowledge/${encodeURIComponent(b.dataset.kid)}`, { method: 'DELETE' });
+        toast('🗑 Knowledge entry removed', 'ok');
+        await fetchAdminOverview();
+        renderAdminDashboardModal();
+      } catch(err){ toast(err.message, 'err'); }
     };
   });
 
@@ -8905,6 +9226,16 @@ function bindStaticUI(){
   const tabLogin = $('#authTabLogin');
   const tabReg = $('#authTabRegister');
   if (tabLogin) tabLogin.onclick = () => openAuthOverlay('login');
+  const gIn = $('#guestSignInBtn'), gUp = $('#guestSignUpBtn'), aClose = $('#authCloseBtn');
+  if (gIn) gIn.onclick = () => openAuthOverlay('login');
+  if (gUp) gUp.onclick = () => openAuthOverlay('register');
+  if (aClose) aClose.onclick = () => { if (isGuest()) hideAuthOverlay(); };
+  const aOv = $('#authOverlay');
+  if (aOv && !aOv.dataset.guestClose){
+    aOv.dataset.guestClose = '1';
+    aOv.addEventListener('mousedown', (e) => { if (isGuest() && e.target === aOv) hideAuthOverlay(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && isGuest() && !aOv.hidden) hideAuthOverlay(); });
+  }
   if (tabReg) tabReg.onclick = () => openAuthOverlay('register');
 
   const invInp = $('#authInviteInput');
@@ -9116,7 +9447,9 @@ async function boot(){
   await resolveInviteFromUrl();
 
   if (!state.token && !savedUserBackup){
-    openAuthOverlay(state.pendingInvite ? 'register' : 'login');
+    // Guests can try the chat right away (7,500 tokens, enforced server-side).
+    enterGuestMode();
+    if (state.pendingInvite) openAuthOverlay('register');
     return;
   }
   const syncSessionWithServer = async (attempt = 0) => {
@@ -9141,6 +9474,7 @@ async function boot(){
       }
       clearSessionUI();
       if (state.pendingInvite) openAuthOverlay('register');
+      else hideAuthOverlay();
     }
   };
   await syncSessionWithServer(0);
@@ -9148,6 +9482,9 @@ async function boot(){
 
 window.LZAuth = {
   get state(){ return state; },
+  isGuest,
+  openAuth: openAuthOverlay,
+  refreshGuestStatus,
   getToken: () => state.token,
   getUser: () => state.user,
   getAccount: () => state.user,
@@ -9166,7 +9503,8 @@ window.LZAuth = {
   renderUsageBar,
   inspectAccountLive,
   exitInspectAccount,
-  playSynthesizedSound
+  playSynthesizedSound,
+  playVoiceBroadcast
 };
 
 window.LZTeams = {

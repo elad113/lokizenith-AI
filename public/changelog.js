@@ -9,7 +9,67 @@
 'use strict';
 const TODAY_ISO = new Date().toISOString().slice(0, 10);
 const CHANGELOG = [
-  {version:'2.6', date: TODAY_ISO, title:'Subscription Plans (Free, Pro & Ultimate), PayPal Instant Sync, Animated Video Banners, Smooth Typewriter Chat, Enlarged Settings, Profiles & Voice Calls',
+  {version:'2.8', date: '2026-11-20', title:'Computer use, Screen share and better voice calls in the Windows app (v1.1.0)',
+   new:[
+     'Computer use (Windows app): type @ and pick Computer use, then say what you want done. Lokizenith takes control of your PC with its own blue mouse and keyboard. A blue "Lokizenith is in control" banner appears, and it sees your screen live. It clicks, types, scrolls, opens apps and websites, and keeps going until the task is done or you press Stop',
+     'Stop any time with the floating Stop button at the top of your screen, the Stop button in the floating bar or in chat, or Ctrl+Alt+S. Every step is shown live in a log',
+     'Screen share (Windows app): a floating Stop button stays at the top of your screen and a floating prompt bar stays on top of every app, so you can ask about whatever is on your screen while you work elsewhere (Ctrl+Alt+Space opens the bar)',
+     'Voice calls work while Lokizenith controls your PC. Say "also open Spotify" to add to the task or "stop" to stop it, and it tells you when it is done. You can also start a task by voice ("take control and open Chrome")',
+     'Voice calls are faster and easier to use: replies start speaking after the first sentence, you can interrupt just by talking, the greeting is shorter, and there are shortcuts (M to mute, Space to interrupt, Esc to end). A call can also be started and controlled from the floating bar',
+     'Windows app 1.1.0 grants its own screen, microphone and notification permissions, checks them on first start and shows the exact fix if Windows blocks one. New tray options: Start with Windows (off by default) and Run as administrator, which lets Computer use control admin windows',
+     'Computer use is much faster and stays on task: the fastest vision models race each other with instant fallback when one is busy, several actions run per step (e.g. click + type + Enter), no fixed waits, a quicker blue cursor, and it does only what you asked. If it is unsure it asks you in the bar instead of guessing',
+     'Screen share answers stream in about a second: the latest screen frame is kept ready so there is no capture delay',
+     'The floating command bar can be dragged anywhere and remembers its spot. Close it with X and a small round L button stays on screen to reopen it; closing the bar never stops the task (only Stop does)',
+     'Stopping or closing the app now always removes the blue banner, blue mouse and floating windows',
+     'On the website, Computer use and Screen share show a popup with a Download for Windows button. In the Android app they are not shown'
+   ],
+   fixed:[
+     'The Download for Windows button now gives the new 1.1.0 installer'
+   ],
+   changed:[
+     'Share screen button next to the voice call button (Windows app; opens the download popup on the website)'
+   ]},
+  {version:'2.7.1', date: '2026-11-19', title:'Much faster answers, Stability fix, Plugins, fast Vision, Download App, Turbo, and verified LokiCode',
+   new:[
+     'Settings → Plugins with 12 plugins (Gmail, Google Calendar, Google Drive, GitHub, Spotify, Discord, Dropbox, Todoist, Notion, Slack, plus Weather and Wikipedia). Each has its official logo and name, a Connect button that opens a real authorization page, and @ in chat to use a connected plugin. Tokens are stored encrypted per user on the server, with refresh and Disconnect. Write actions (send email, create an issue, post a message) ask you to confirm first. Weather and Wikipedia work immediately with no account',
+     'Photo and file analysis rebuilt for speed: images are compressed on your device, uploaded in parallel, and answered in about a second by a first-token race between Groq vision and Gemini Flash-Lite, with results cached by hash',
+     'Video upload and analysis: attach an MP4 or WebM clip — Lokizenith grabs scene-change keyframes, transcribes the audio, and explains what happens on a timeline',
+     'Multi-photo answers (up to 10 at once): each photo is labeled Photo 1, Photo 2, … with its own section, then a comparison and summary, plus tray tools for OCR, compare, alt text, and asking about a region',
+     'In this release (shipping alongside this update): Settings → Plugins with at least 8 real, wired plugins including Gmail and GitHub — each with its logo and name, a Connect button that opens a real authorization page, and @ in chat to use connected plugins',
+     'In this release (shipping alongside this update): much faster photo and file analysis (under 1 second, or 2 at most), video analysis, and organized answers when you send several photos at once',
+     'Download App section (next to LokiCode and Team Chat) with Download for Windows and Download for Android (APK). The Windows and Android apps are independent of the website, can be updated separately, and the PC app has extras the site and APK do not (system tray, global hotkey, local files, offline cache, notifications, auto-update). A user who signs up in either app appears in the website admin users list, and chats stay in sync',
+     'Turbo mode: the regular chatbot answers around 10× faster, with stronger thinking, long full answers and custom interactive UI in a few seconds, near-instant verification, and much faster web search',
+     'LokiCode now writes only as much code as the task needs — it no longer pads to ~200 lines or repeats the same blocks — and verifies that the result works',
+     'LSL in LokiCode was rebuilt for Eureka World: every script is checked with a real OpenSim/OSSL compiler, test-run in an LSL emulator, and auto-fixed for up to 3 rounds',
+     'LokiCode can compile and verify JavaScript, TypeScript, Python, HTML/CSS, JSON, Bash and LSL in well under a second, with structure checks for C++, Go, Rust, Java and C#',
+     'Fix errors button in LokiCode keeps fixing and re-checking a script until there are 0 errors, and shows each round as it goes',
+     'Deep search can go through more than 100 websites, read them, and reach a sourced conclusion in seconds',
+     'Trust meter is real and per source: every result gets its own score and a short reason, instead of a single generic meter',
+     'Answer length picker next to thinking mode: Short, Medium, Detailed, or Long',
+     'Answers now start streaming in about half a second for every message, with smooth typing that never slows them down',
+     'The AI can build brand-new custom interactive apps from scratch when you ask for something specific, plus diagrams, drawings, examples, and widgets inside the answer',
+     'Settings background library with live previews and names, plus 8 new animated backgrounds: Starfield, Nebula, Liquid, Synthwave, Constellation, Plasma, Embers and Ripples',
+     'Deleting a chat opens a glowing red-and-black animated popup with Delete and Cancel, instead of the plain browser confirm box'
+   ],
+   fixed:[
+     'Fixed slow replies: every answer now starts in about 0.3–0.5s on a fast model lane (with automatic fallback), and plugin lookups no longer delay normal messages',
+     'Fixed answers sometimes appearing twice (a finished bubble plus a second copy still typing)',
+     'Fixed the Short / Medium / Detailed / Long picker so each length really changes the answer (Short = 1–3 sentences … Long = very extensive)',
+     'Fixed Gmail, Google Calendar and Google Drive Connect failing with an invalid client secret',
+     'Current-events questions now get quick web sources with the trust meter on every model',
+     'The site can no longer freeze or crash when saving user data: Firestore writes now happen in the background with short timeouts and retries, only changed documents are written, and chat stays usable if the database is slow or at its free daily limit',
+     'Sending a message no longer hangs without a Working indicator while quota or sync calls are slow',
+     'The working indicator now stays visible after the next message in a new chat — it was disappearing when the chat redrew itself mid-reply',
+     'Asking about an attached video no longer opens the AI video generator',
+     'Photo analysis no longer waits for a full JSON card before the first words appear — answers now stream immediately'
+   ],
+   changed:[
+     'The + menu upload accepts photos, videos and office documents, and the tray shows live Photo/Video labels plus keyframe counts',
+     'LokiCode verification is now a real compile / run / fix loop, not only a style pass, and today\'s updates are listed in this single changelog entry',
+     'Reloading or reopening the site or app now opens a fresh new chat (empty hero) instead of the latest conversation. Previous chats stay in the sidebar and are not added to history until you send the first message',
+     'The quick-action chip bar above the prompt (Deep search, Web search, Image, LokiCode, Length, Thinking, Export, Read aloud) was removed. Those features stay in the + menu, the length picker next to thinking mode, message actions, and Settings'
+   ]},
+  {version:'2.6', date:'2026-11-18', title:'Subscription Plans (Free, Pro & Ultimate), PayPal Instant Sync, Animated Video Banners, Smooth Typewriter Chat, Enlarged Settings, Profiles & Voice Calls',
    new:[
      'Subscription Plans Studio (Replaced Benches with Plans): compare Loki Free ($0/Month), Loki Pro ($7.99/Month with 5× more usage — 125,000 tokens, 15 daily images/16h, 52 LokiCode generations/4h, 85 Lokizen 4.0 Stark messages/6h, 25 file/photo attachments/4h, 12 weekly shared chats, Animated Backgrounds & 4s Video Profile Banner), and Loki Ultimate ($12.99/Month or $5.00/Month prorated upgrade from Pro + one-time 3-Day Free Trial with Unlimited usage, images, LokiCode, Stark & attachments, Ultra Thinking Mode at Turbo speed, and AI Design Studio)',
      'Instant PayPal Subscription Activation & Cancelation Retention: integrated live PayPal Subscription checkout with instant plan activation upon PayPal approval, automatic lower-tier unobtainable lockouts, and cancelation support that preserves your active plan benefits until the end of your billing cycle',

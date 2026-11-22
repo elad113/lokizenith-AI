@@ -81,10 +81,10 @@ window.LokiBot = {
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    mountGrokBotIntoLokiBotView();
+    if (document.getElementById('lokibotView')) mountGrokBotIntoLokiBotView();
   });
 } else {
-  mountGrokBotIntoLokiBotView();
+  if (document.getElementById('lokibotView')) mountGrokBotIntoLokiBotView();
 }
 
 initAuth();

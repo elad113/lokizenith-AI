@@ -169,7 +169,11 @@ function renderHead(){
     else if (a === 'explain'){ if (topic){ $('#lsInput').value = ''; ask(L('explainAsk') + topic); } else { $('#lsInput').value = L('explainAsk'); $('#lsInput').focus(); A.toast(L('topicPrompt')); } }
     else if (a === 'plan') ask(L('planAsk').replace('{s}', subjName(cur())));
     else if (a === 'review') review();
-    else if (a === 'clear'){ if (confirm(L('clear') + '?')){ sd(cur().id).msgs = []; save(); renderMsgs(); } }
+    else if (a === 'clear'){
+      const go = () => { sd(cur().id).msgs = []; save(); renderMsgs(); };
+      const cancel = ({he:'ביטול', ar:'إلغاء', en:'Cancel'}[(A.settings && A.settings().lang)] || 'Cancel');
+      (A.confirmDanger ? A.confirmDanger({ title: L('clear') + '?', confirmLabel: L('clear'), cancelLabel: cancel }) : Promise.resolve(false)).then(ok => { if (ok) go(); });
+    }
   };
 }
 

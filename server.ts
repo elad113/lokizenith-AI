@@ -1,5 +1,6 @@
 import express from 'express';
 import http from 'http';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -135,6 +136,27 @@ import {
   normalizeCommunityEvent,
   sanitizeCommunityEventForClient,
 } from './src/utils/communityEvents.ts';
+import {
+  buildAnswerLengthInstruction,
+  consumeGuestQuota,
+  getGuestQuota,
+} from './src/utils/guestAndLength.ts';
+import {
+  getGuestIdentityKey,
+  registerLokizenithSyncRoutes,
+} from './src/server/lokizenithSyncRoutes.ts';
+import {
+  generateImageChain,
+  generateVideoChain,
+  getVideoProvidersCatalog,
+} from './src/server/mediaProviders.ts';
+import {
+  registerReportsAndKnowledgeRoutes,
+  getAllReports,
+  getOpenReportsCount,
+  getAllKnowledge,
+  getKnowledgeStats,
+} from './src/server/reportsAndKnowledge.ts';
 
 dotenv.config();
 
@@ -390,6 +412,10 @@ async function startServer() {
         const ev = getActiveCommunityEvent(now);
         return ev ? sanitizeCommunityEventForClient(ev, null, now) : null;
       })(),
+      reports: getAllReports().slice(0, 150),
+      openReportsCount: getOpenReportsCount(),
+      knowledgeEntries: getAllKnowledge().slice(0, 150),
+      knowledgeStats: getKnowledgeStats(),
       users: allUsers,
     };
   }
@@ -3324,24 +3350,52 @@ async function startServer() {
     return res.json({ ok });
   });
 
-  // In-memory store for recent live voice PA clips so any connected client can fetch/play them reliably
-  const liveAudioClips = new Map<
-    string,
-    {
-      id: string;
-      audioDataUrl: string;
-      voiceFilter: string;
-      label: string;
-      caption: string;
-      by: string;
-      at: number;
+  // Persistent + in-memory store for recent live voice PA clips (powers both live broadcasts & local Candy Easter Egg playback)
+  type LiveAudioClipRecord = {
+    id: string;
+    audioDataUrl: string;
+    voiceFilter: string;
+    label: string;
+    caption: string;
+    by: string;
+    at: number;
+  };
+  const liveAudioClips = new Map<string, LiveAudioClipRecord>();
+  const LATEST_VOICE_FILE = path.resolve(process.cwd(), 'data', 'latest-admin-voice.json');
+  let latestAdminVoiceClip: LiveAudioClipRecord | null = null;
+  try {
+    if (fs.existsSync(LATEST_VOICE_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(LATEST_VOICE_FILE, 'utf8'));
+      if (parsed && typeof parsed.audioDataUrl === 'string' && parsed.audioDataUrl.length > 20) {
+        latestAdminVoiceClip = parsed;
+        if (parsed.id) liveAudioClips.set(parsed.id, parsed);
+      }
     }
-  >();
+  } catch (_e) {}
+
+  function saveLatestAdminVoiceClip(clip: LiveAudioClipRecord) {
+    latestAdminVoiceClip = clip;
+    try {
+      const dir = path.dirname(LATEST_VOICE_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const tmp = `${LATEST_VOICE_FILE}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(clip), 'utf8');
+      fs.renameSync(tmp, LATEST_VOICE_FILE);
+    } catch (_e) {}
+  }
 
   app.get('/api/admin/audio-clip/:id', (req, res) => {
     const clip = liveAudioClips.get(String(req.params.id || ''));
     if (!clip) return res.status(404).json({ error: 'Audio clip not found.' });
     return res.json({ ok: true, clip });
+  });
+
+  // Public read-only endpoint for Candy Easter Egg: plays latest Admin voice recording ONLY locally for the clicking user (never broadcasts!)
+  app.get('/api/audio/latest-admin-recording', (_req, res) => {
+    if (!latestAdminVoiceClip) {
+      return res.json({ ok: true, available: false, clip: null });
+    }
+    return res.json({ ok: true, available: true, clip: latestAdminVoiceClip });
   });
 
   // Admin: Live Voice PA Recording (up to 60s / 1 minute) & Built-In Soundboard Broadcast to All Online Accounts simultaneously!
@@ -3360,7 +3414,7 @@ async function startServer() {
     let audioId: string | null = null;
     if (isVoice && cleanAudioDataUrl) {
       audioId = uid('vclip');
-      liveAudioClips.set(audioId, {
+      const clipRecord: LiveAudioClipRecord = {
         id: audioId,
         audioDataUrl: cleanAudioDataUrl,
         voiceFilter: String(voiceFilter || 'normal'),
@@ -3368,7 +3422,9 @@ async function startServer() {
         caption: String(caption || '').trim().slice(0, 200),
         by: user.username,
         at: now,
-      });
+      };
+      liveAudioClips.set(audioId, clipRecord);
+      saveLatestAdminVoiceClip(clipRecord);
       if (liveAudioClips.size > 25) {
         const oldestKey = liveAudioClips.keys().next().value;
         if (oldestKey) liveAudioClips.delete(oldestKey);
@@ -4388,102 +4444,8 @@ ${JSON.stringify(digest)}`,
     return '';
   }
 
-  async function generateImageMultiProvider(prompt: string, width = 1024, height = 1024): Promise<{ dataUrl: string; provider: string }> {
-    const cleanPrompt = String(prompt || '').trim();
-    if (!cleanPrompt) throw new Error('Prompt is required');
-
-    // 1. Try Gemini image generation if key available
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey) {
-      try {
-        const ai = getGenAI(apiKey);
-        const res = await ai.models.generateImages({
-          model: 'imagen-3.0-generate-002',
-          prompt: cleanPrompt,
-          config: {
-            numberOfImages: 1,
-            aspectRatio: '1:1',
-            outputMimeType: 'image/jpeg'
-          }
-        });
-        const b64 = res.generatedImages?.[0]?.image?.imageBytes;
-        if (b64) {
-          return { dataUrl: `data:image/jpeg;base64,${b64}`, provider: 'Gemini Imagen' };
-        }
-      } catch (_e) {}
-    }
-
-    // 2. High-speed Kepler OVH SDXL (stable-diffusion-xl-base-v10) with 30s timeout
-    try {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), 30000);
-      const res = await fetch('https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/images/generations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'stable-diffusion-xl-base-v10',
-          prompt: cleanPrompt,
-          n: 1,
-          size: '1024x1024',
-          response_format: 'b64_json'
-        }),
-        signal: ctl.signal
-      });
-      clearTimeout(timer);
-      if (res.ok) {
-        const j: any = await res.json();
-        const b64 = j.data?.[0]?.b64_json;
-        if (b64) {
-          return { dataUrl: `data:image/png;base64,${b64}`, provider: 'Kepler SDXL' };
-        }
-      }
-    } catch (_e) {}
-
-    // 3. Fallback: AI Horde distributed SD cluster (100% free open-source GPU cluster)
-    try {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), 28000);
-      const initRes = await fetch('https://aihorde.net/api/v2/generate/async', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': '0000000000' },
-        body: JSON.stringify({
-          prompt: cleanPrompt,
-          params: { width: Math.min(width, 768), height: Math.min(height, 768), steps: 20 }
-        }),
-        signal: ctl.signal
-      });
-      if (initRes.ok) {
-        const initData: any = await initRes.json();
-        const jobId = initData.id;
-        if (jobId) {
-          const pollStart = Date.now();
-          while (Date.now() - pollStart < 22000) {
-            await new Promise(r => setTimeout(r, 2000));
-            const checkRes = await fetch(`https://aihorde.net/api/v2/generate/status/${jobId}`, { signal: ctl.signal });
-            if (checkRes.ok) {
-              const checkData: any = await checkRes.json();
-              if (checkData.done && checkData.generations?.[0]?.img) {
-                const imgData = checkData.generations[0].img;
-                clearTimeout(timer);
-                if (imgData.startsWith('http')) {
-                  const imgFetch = await fetch(imgData);
-                  const ab = await imgFetch.arrayBuffer();
-                  return {
-                    dataUrl: `data:image/webp;base64,${Buffer.from(ab).toString('base64')}`,
-                    provider: 'AI Horde'
-                  };
-                } else {
-                  return { dataUrl: `data:image/webp;base64,${imgData}`, provider: 'AI Horde' };
-                }
-              }
-            }
-          }
-        }
-      }
-      clearTimeout(timer);
-    } catch (_e) {}
-
-    throw new Error('All image generation providers are temporarily busy. Please try again.');
+  async function generateImageMultiProvider(prompt: string, width = 1024, height = 1024): Promise<{ dataUrl: string; provider: string; model?: string }> {
+    return await generateImageChain(prompt, width, height);
   }
 
   async function callLiveAI(messages: any[], temperature: number, maxTokens: number, json: boolean, fast = false): Promise<string> {
@@ -5319,6 +5281,17 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
     if (!enforce.ok) {
       return res.status(enforce.status).json(enforce.body);
     }
+    if (!authUser) {
+      const gKey = getGuestIdentityKey(req);
+      const gQuota = getGuestQuota(gKey);
+      if (gQuota.remaining <= 0) {
+        return res.status(403).json({
+          code: 'GUEST_LIMIT_REACHED',
+          error: 'You have used your 7,500 free guest tokens. Sign up free for 25,000 tokens every 6 hours.',
+        });
+      }
+      consumeGuestQuota(gKey, 250);
+    }
     if (authUser) {
       const updEv = recordCommunityActivity(authUser.id, 'messages_sent');
       if (updEv) broadcastActiveEvent(updEv);
@@ -5339,7 +5312,7 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
     };
 
     try {
-      const { messages = [], temperature = 0.25, maxTokens = 6144, level = 1, mode = 'auto' } = req.body || {};
+      const { messages = [], temperature = 0.25, maxTokens = 6144, level = 1, mode = 'auto', answerLength } = req.body || {};
       const isUltra = Number(level) === 4 || mode === 'ultra';
       const isTurbo = Number(level) === 0 || isUltra || mode === 'fast';
       let systemInstruction = '';
@@ -5367,12 +5340,14 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
       }
       if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
       const platDirective = String(store.platformConfig?.globalAiDirective || '').trim();
+      const lengthDirective = answerLength ? `\n\n[${buildAnswerLengthInstruction(answerLength)}]` : '';
       const ultraDirective = isUltra
         ? '\n\n[ULTRA HYPER-PRECISION MODE: Answer immediately with zero preamble, zero filler intros ("Sure!", "Great question!"), razor-sharp accuracy, structured clarity, and concrete verifiable details. Be tighter, faster, and smarter than standard replies.]'
         : '';
       const fullSys =
         (systemInstruction ? systemInstruction + '\n\n' : '') +
         FOUNDER_KNOWLEDGE +
+        lengthDirective +
         ultraDirective +
         (platDirective ? `\n\n[PLATFORM ADMIN DIRECTIVE: ${platDirective}]` : '');
 
@@ -5423,12 +5398,15 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
         return;
       }
 
-      // 3. Non-streaming live AI cluster fallback before synthesis fallback
+      // 3. Non-streaming live AI cluster fallback before synthesis fallback (stream word chunks progressively)
       const liveText = await callLiveAI(cleanMessages, temperature, maxTokens, false, isTurbo);
       const finalText = liveText || synthesizeFallback(messages, systemInstruction, false);
-      const step = Math.max(40, Math.ceil(finalText.length / 24));
-      for (let i = 0; i < finalText.length; i += step) {
-        writeChunk(finalText.slice(i, i + step));
+      const tokens = finalText.match(/\S+\s*/g) || [finalText];
+      const wordsPerChunk = Math.max(1, Math.min(4, Math.ceil(tokens.length / 45)));
+      for (let i = 0; i < tokens.length; i += wordsPerChunk) {
+        if (res.writableEnded) break;
+        writeChunk(tokens.slice(i, i + wordsPerChunk).join(''));
+        await new Promise((r) => setTimeout(r, 14));
       }
       finishStream();
     } catch (_e) {
@@ -5507,6 +5485,30 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
   };
   app.post('/api/image/generate', handleImageGen);
   app.post('/api/image', handleImageGen);
+
+  // Multi-Provider AI Video Generation endpoint (Fal Wan 2.1 -> Replicate -> Luma Ray 2 -> Pollinations Seedance/Veo -> Lightricks LTX-Video -> Alibaba Wan 2.1 Fast -> Airforce -> Multi-Keyframe)
+  app.get('/api/video/providers', (_req, res) => {
+    return res.json({ ok: true, providers: getVideoProvidersCatalog() });
+  });
+
+  app.post('/api/video/generate', async (req: any, res: any) => {
+    try {
+      const authUser = getAuthUser(req);
+      const enforce = enforceServerFeatureQuota(authUser, 'image', req.body?.turnId);
+      if (!enforce.ok) {
+        return res.status(enforce.status).json(enforce.body);
+      }
+      const { prompt, duration = 4, ratio = '16:9', sourceImageUrl } = req.body || {};
+      const result = await generateVideoChain(String(prompt || ''), {
+        duration: Number(duration) || 4,
+        ratio: String(ratio || '16:9'),
+        sourceImageUrl: typeof sourceImageUrl === 'string' ? sourceImageUrl : undefined,
+      });
+      return res.json({ ok: true, ...result });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || 'Video generation failed' });
+    }
+  });
 
   // Dynamic AI-generated & language-aware code ideas for LokiCode (#lcQuickIdeas + Refresh button)
   let ideaRefreshCounter = 0;
@@ -6995,6 +6997,26 @@ Feel free to ask for additional columns or more granular data!`;
     ? `לגבי "${cleanUser.slice(0, 80)}": הנושא כולל מספר היבטים מרכזיים שכדאי לקחת בחשבון. שאל אותי כל פרט נוסף ונצלול לעומק!`
     : `Here is a direct overview regarding "${cleanUser.slice(0, 80)}": feel free to ask a follow-up question or specify any detail you'd like to explore further.`;
 }
+
+  registerLokizenithSyncRoutes(app, getAuthUser);
+  registerReportsAndKnowledgeRoutes(app, {
+    getAuthUser,
+    hasAdminPermission: (u, mod) => hasAdminModulePermission(u, mod as any),
+    onAdminUpdate: () => {
+      try {
+        const now = Date.now();
+        const ov = buildAdminOverview(now);
+        for (const ws of wss.clients) {
+          const uidKey = (ws as any).userId as string | undefined;
+          const acc = uidKey ? store.users[uidKey] : null;
+          if (acc && hasAdminAccess(acc)) {
+            sendWs(ws, { type: 'admin:overview_update', overview: ov });
+          }
+        }
+      } catch (_e) {}
+    },
+    recordAudit: (entry) => recordAuditLog(entry as any),
+  });
 
   const sendLegalPage = (file: string, res: express.Response) => {
     const pub = path.join(process.cwd(), 'public', file);

@@ -22,17 +22,9 @@ test('getCuratedLanguageIdeas returns 4 tailored ideas per language and rotates 
   const pyIdeas = getCuratedLanguageIdeas('python', 0);
   assert.equal(pyIdeas.length, 4);
   assert.ok(pyIdeas.some((i) => /Python/i.test(i.prompt)));
-
-  const rustIdeas = getCuratedLanguageIdeas('rust', 0);
-  assert.equal(rustIdeas.length, 4);
-  assert.ok(rustIdeas.some((i) => /Rust/i.test(i.prompt)));
-
-  const goIdeas = getCuratedLanguageIdeas('go', 0);
-  assert.equal(goIdeas.length, 4);
-  assert.ok(goIdeas.some((i) => /Go/i.test(i.prompt)));
 });
 
-test('detectCodeInputRequirement detects stdin calls across all 11 languages including Rust, Go, and MATLAB', () => {
+test('detectCodeInputRequirement detects stdin calls across all languages including MATLAB', () => {
   assert.equal(detectCodeInputRequirement('matlab', "n = input('Enter N: ');\ndisp(n);"), true);
   assert.equal(detectCodeInputRequirement('matlab', "A = magic(3);\ndisp(A);"), false);
   assert.equal(detectCodeInputRequirement('python', "name = input('Name: ')"), true);
@@ -40,10 +32,6 @@ test('detectCodeInputRequirement detects stdin calls across all 11 languages inc
   assert.equal(detectCodeInputRequirement('cpp', 'int x; std::cin >> x;'), true);
   assert.equal(detectCodeInputRequirement('csharp', 'string s = Console.ReadLine();'), true);
   assert.equal(detectCodeInputRequirement('lsl', 'llListen(0, "", NULL_KEY, "");'), true);
-  assert.equal(detectCodeInputRequirement('rust', 'std::io::stdin().read_line(&mut buf).unwrap();'), true);
-  assert.equal(detectCodeInputRequirement('rust', 'fn main() { println!("hi"); }'), false);
-  assert.equal(detectCodeInputRequirement('go', 'scanner := bufio.NewScanner(os.Stdin)'), true);
-  assert.equal(detectCodeInputRequirement('go', 'package main\nfunc main() { println("ok") }'), false);
 });
 
 test('executeMatlabScript compiles and runs MATLAB matrix math, loops, fprintf, and interactive stdin', () => {

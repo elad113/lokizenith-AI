@@ -1,0 +1,19 @@
+[
+  {
+    "id": "rep_d9bc5864ae8e",
+    "messageId": "mwrp2ycey14zc4",
+    "convId": "mwrp2ybpmmanx4",
+    "userPrompt": "היי",
+    "aiResponse": "היי Lokizenith, מה שלומך? אני כאן לכל שאלה או נושא שתרצה להעמיק בו היום.",
+    "reason": "מידע שגוי",
+    "category": "inaccurate",
+    "model": "stark",
+    "reporterUsername": "EladBenczel",
+    "reporterDisplayName": "EladBenczel",
+    "reporterId": "usr_mwrndo2g_17c18064",
+    "status": "open",
+    "adminNote": "",
+    "createdAt": 1795343373238,
+    "updatedAt": 1795343373238
+  }
+]

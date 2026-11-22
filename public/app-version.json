@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "appName": "Lokizenith AI",
+  "publisher": "Lokiz Studios",
+  "website": "https://lokizenith.com",
+  "version": "1.1.0",
+  "versionCode": 110,
+  "releasedAt": "2026-11-20",
+  "minWindows": "10",
+  "minAndroidApi": 26,
+  "packageId": "com.lokizstudios.lokizenithai",
+  "downloads": {
+    "windows": {
+      "label": "Download for Windows",
+      "file": "Lokizenith-AI-Setup-1.1.0.exe",
+      "url": "https://storage.googleapis.com/lokizenith-ai-app-downloads/Lokizenith-AI-Setup-1.1.0.exe",
+      "sha256": "ba7cdda52011d652cadaaf821e32d9f49cd962f00646938918a0eede28b94f42",
+      "sizeBytes": 85095474,
+      "contentType": "application/vnd.microsoft.portable-executable"
+    },
+    "android": {
+      "label": "Download for Android (APK)",
+      "file": "Lokizenith-AI-1.0.0.apk",
+      "url": "https://storage.googleapis.com/lokizenith-ai-app-downloads/Lokizenith-AI-1.0.0.apk",
+      "sha256": "5cc05193c399c414b4604c6a7d331a7cfe68fb77afa1a0822fbb2bd80bd246c9",
+      "sizeBytes": 46705,
+      "contentType": "application/vnd.android.package-archive",
+      "version": "1.0.0"
+    }
+  },
+  "desktopFeatures": [
+    "Computer use: type @ and pick Computer use. Lokizenith controls your PC with its own blue mouse and keyboard until the task is done or you press Stop",
+    "Screen share with a floating Stop button and a floating prompt bar that stay on top of every app",
+    "Voice calls that keep working while Lokizenith controls your PC, so you can add tasks or say stop",
+    "All permissions granted to the app, with a first-run check and clear fixes",
+    "System tray, Start with Windows (optional) and Run as administrator (optional)",
+    "Global hotkeys: Ctrl+Shift+L show/hide, Ctrl+Alt+Space floating bar, Ctrl+Alt+S stop",
+    "Open local files from disk, offline cache, native notifications and auto-update"
+  ],
+  "notes": "Independent Windows and Android apps that use the same Lokizenith accounts, chats, and admin user list as the website."
+}

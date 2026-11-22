@@ -697,6 +697,15 @@ function ensureLSL(){
     .catch(() => {});
 }
 
+let matlabLoaded = false;
+function ensureMATLAB(){
+  if (matlabLoaded || !window.hljs || (window.hljs && hljs.getLanguage('matlab'))) return;
+  matlabLoaded = true;
+  LZ.loadScript('https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/languages/matlab.min.js')
+    .then(() => paint(st.code))
+    .catch(() => {});
+}
+
 // Initial state
 const savedState = A.safeJSON(localStorage.getItem('lz.code')) || {};
 const st = {
@@ -1053,6 +1062,7 @@ let lastHljsTime = 0;
 function paint(code, opts = {}){
   const l = L();
   if (l.id === 'lsl') ensureLSL();
+  if (l.id === 'matlab') ensureMATLAB();
   const text = String(code || '');
   const fastStream = !!opts.fast;
   const now = performance.now();
@@ -1060,9 +1070,11 @@ function paint(code, opts = {}){
   let html;
   if (shouldHighlight && window.hljs) {
     lastHljsTime = now;
-    const lang = hljs.getLanguage(l.hl) ? l.hl : (l.id === 'lsl' ? 'cpp' : l.hl);
+    const candidate = hljs.getLanguage(l.hl) ? l.hl : (l.id === 'lsl' ? 'cpp' : null);
     try {
-      html = hljs.highlight(text, {language: lang, ignoreIllegals: true}).value;
+      html = candidate && hljs.getLanguage(candidate)
+        ? hljs.highlight(text, {language: candidate, ignoreIllegals: true}).value
+        : A.esc(text);
     } catch(_){
       html = A.esc(text);
     }
@@ -1310,26 +1322,217 @@ function renderWorkDrawer(){
   }
 }
 
+let lastVerifyFailed = false;
+let fixingBusy = false;
+let fixCtl = null;
+
+function ensureFixStyles(){
+  if ($('#lcFixStyles')) return;
+  const s = document.createElement('style');
+  s.id = 'lcFixStyles';
+  s.textContent = `
+    .lc-verify-banner { flex-wrap: wrap; }
+    .lc-verify-banner.fixing { background: rgba(245, 158, 11, 0.16); border: 1px solid rgba(251, 191, 36, 0.55); color: #fde68a; }
+    .lc-banner-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+    .lc-btn-fix, .lc-btn-stop {
+      padding: 7px 14px; border-radius: 10px; font-size: 0.82rem; font-weight: 800; cursor: pointer;
+    }
+    .lc-btn-fix {
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.35), rgba(239, 68, 68, 0.28));
+      border: 1px solid rgba(251, 191, 36, 0.75); color: #fde68a;
+    }
+    .lc-btn-fix:hover { filter: brightness(1.08); }
+    .lc-btn-stop {
+      background: rgba(239, 68, 68, 0.22); border: 1px solid rgba(248, 113, 113, 0.7); color: #fecaca;
+    }
+    #lcFixErrors.pulse-fix { animation: pop 0.35s var(--ease); }
+  `;
+  document.head.appendChild(s);
+}
+
+function ensureFixUi(){
+  ensureFixStyles();
+  const verify = $('#lcVerify');
+  if (verify && !$('#lcFixErrors')) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.id = 'lcFixErrors';
+    b.className = 'lc-btn-fix';
+    b.hidden = true;
+    b.title = 'Keep fixing until the compiler reports 0 errors';
+    b.textContent = '🔧 Fix errors';
+    b.onclick = () => { void fixUntilZero(); };
+    verify.after(b);
+  }
+  if (verify && !$('#lcFixStop')) {
+    const sbtn = document.createElement('button');
+    sbtn.type = 'button';
+    sbtn.id = 'lcFixStop';
+    sbtn.className = 'lc-btn-stop';
+    sbtn.hidden = true;
+    sbtn.title = 'Stop the fix loop';
+    sbtn.textContent = '⏹ Stop';
+    sbtn.onclick = () => stopFixLoop();
+    ($('#lcFixErrors') || verify).after(sbtn);
+  }
+}
+
+function setFixUi(state){
+  ensureFixUi();
+  const fix = $('#lcFixErrors');
+  const stop = $('#lcFixStop');
+  if (fix) {
+    fix.hidden = state !== 'ready';
+    fix.disabled = state !== 'ready';
+    if (state === 'ready') fix.classList.add('pulse-fix');
+  }
+  if (stop) stop.hidden = state !== 'running';
+}
+
+function stopFixLoop(){
+  try { fixCtl && fixCtl.abort(); } catch (_e) {}
+}
+
 function hideVerifyBanner(){
   const b = $('#lcVerifyBanner');
   if (b) b.hidden = true;
 }
 
-function showVerifyBanner(kind, title, details){
+function showVerifyBanner(kind, title, details, opts){
   const b = $('#lcVerifyBanner');
   if (!b) return;
+  opts = opts || {};
+  ensureFixStyles();
   b.hidden = false;
-  b.className = 'lc-verify-banner ' + kind;
+  const isFixing = kind === 'fixing' || !!opts.fixing;
+  const showFix = !isFixing && (opts.showFix === true || (kind === 'fixed' && opts.showFix !== false && !opts.unavailable));
+  if (kind === 'ok') lastVerifyFailed = false;
+  else if (showFix) lastVerifyFailed = true;
+  setFixUi(isFixing ? 'running' : (showFix || lastVerifyFailed && kind === 'fixed' ? 'ready' : 'hidden'));
+  b.className = 'lc-verify-banner ' + (isFixing ? 'fixing' : kind);
+  const fixBtn = showFix
+    ? `<div class="lc-banner-actions"><button type="button" class="lc-btn-fix lc-banner-fix" title="Keep fixing until the compiler reports 0 errors">🔧 Fix errors</button></div>`
+    : (isFixing ? `<div class="lc-banner-actions"><button type="button" class="lc-btn-stop lc-banner-stop" title="Stop the fix loop">⏹ Stop</button></div>` : '');
   b.innerHTML = `
-    <div class="v-ic">${kind === 'ok' ? '🛡️' : '🔧'}</div>
+    <div class="v-ic">${kind === 'ok' ? '🛡️' : (isFixing ? '⏳' : '🔧')}</div>
     <div class="v-body">
       <b>${A.esc(title)}</b>
       <small>${A.esc(details)}</small>
     </div>
+    ${fixBtn}
     <button type="button" class="v-close" aria-label="Dismiss">✕</button>
   `;
   const closeBtn = b.querySelector('.v-close');
   if (closeBtn) closeBtn.onclick = () => { b.hidden = true; };
+  const bannerFix = b.querySelector('.lc-banner-fix');
+  if (bannerFix) bannerFix.onclick = () => { void fixUntilZero(); };
+  const bannerStop = b.querySelector('.lc-banner-stop');
+  if (bannerStop) bannerStop.onclick = () => stopFixLoop();
+}
+
+function authHeaders(){
+  const headers = { 'Content-Type': 'application/json' };
+  const tok = window.LZAuth?.getToken?.();
+  if (tok) headers['x-lz-token'] = tok;
+  if (window.LZAuth?.getUserBackupHeader) {
+    const hb = window.LZAuth.getUserBackupHeader();
+    if (hb) headers['x-lz-user-backup'] = hb;
+  }
+  return headers;
+}
+
+async function fixUntilZero(){
+  const raw = (st.code || '').trim();
+  if (!raw) {
+    A.toast('Generate, paste, or write code first to fix!', 'err');
+    return;
+  }
+  if (busy || fixingBusy) return;
+  const l = L();
+  fixingBusy = true;
+  busy = true;
+  fixCtl = new AbortController();
+  setFixUi('running');
+  startWorkUI(`Fixing ${l.name} errors — will keep going until 0 remain…`);
+  showVerifyBanner('fixing', `Fixing ${l.name} errors…`, 'Starting compiler-driven fix loop');
+  let lastCode = raw;
+  let lastMsg = { ok: false, issues: [], rounds: 0, compiler: '', reason: '' };
+  try {
+    const res = await fetch('/api/lokicode/fix', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ lang: l.id, code: raw, prompt: st.prompt || '', comments: true }),
+      signal: fixCtl.signal
+    });
+    if (!res.ok || !res.body) throw new Error('Fix HTTP ' + res.status);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const d = line.slice(5).trim();
+        if (d === '[DONE]') continue;
+        let j;
+        try { j = JSON.parse(d); } catch (_e) { continue; }
+        if (j.code && j.code !== lastCode) {
+          lastCode = j.code;
+          setCode(j.code, !!j.ok);
+        }
+        if (j.status || j.round) {
+          const n = j.issueCount != null ? j.issueCount : (j.issues || []).length;
+          advanceWorkStep(j.status || `Round ${j.round}/${j.maxRounds || 15} · ${n} error(s)`);
+          showVerifyBanner('fixing', j.status || `Round ${j.round} · ${n} error(s) left`, (j.issues || []).slice(0, 3).join(' · ') || l.name);
+        }
+        if (j.done) lastMsg = j;
+      }
+    }
+    if (lastMsg.code) setCode(lastMsg.code, !!lastMsg.ok);
+    const tool = lastMsg.compiler || lastMsg.method || 'compiler';
+    if (lastMsg.ok) {
+      lastVerifyFailed = false;
+      finishWorkUI(`✓ 0 errors after ${lastMsg.rounds} fix round${lastMsg.rounds === 1 ? '' : 's'} · ${tool}`);
+      showVerifyBanner('ok', `✓ ${l.name} verified — 0 errors`, `${tool} · ${lastMsg.rounds} fix round${lastMsg.rounds === 1 ? '' : 's'} · ${lastMsg.verifyMs ?? 0} ms`);
+      A.sound && A.sound('done');
+      A.toast(`✓ ${l.name} is clean after ${lastMsg.rounds} fix round${lastMsg.rounds === 1 ? '' : 's'}`, 'ok');
+    } else {
+      const issues = lastMsg.issues || [];
+      const why = lastMsg.reason === 'aborted' ? 'Stopped'
+        : lastMsg.reason === 'no-progress' ? 'No further progress'
+        : lastMsg.reason === 'max-rounds' ? 'Reached the safety cap (15 rounds)'
+        : 'Fix loop ended';
+      lastVerifyFailed = true;
+      finishWorkUI(`⚠ ${why} · ${issues.length} error(s) remain`);
+      showVerifyBanner('fixed', `⚠ ${why} — ${issues.length} error(s) remain`, (issues.slice(0, 3).join(' · ') || why) + ` · ${tool}. Click Fix errors to continue.`, { showFix: true });
+      A.toast(`${issues.length} ${l.name} error(s) remain — you can run Fix errors again`, 'err');
+    }
+  } catch (err) {
+    if (err && (err.name === 'AbortError' || /abort/i.test(err.message || ''))) {
+      lastVerifyFailed = true;
+      finishWorkUI('⏹ Fix stopped');
+      showVerifyBanner('fixed', '⏹ Fix stopped', 'Stopped on request. Click Fix errors to continue from the current code.', { showFix: true });
+      A.toast('Fix loop stopped', 'ok');
+    } else {
+      lastVerifyFailed = true;
+      finishWorkUI('⚠ Fix failed');
+      showVerifyBanner('fixed', 'Fix failed', err && err.message ? err.message : 'The fix service did not finish.', { showFix: true });
+      A.toast('Fix failed — try again', 'err');
+    }
+  } finally {
+    fixingBusy = false;
+    busy = false;
+    const wrap = $('#lcWrap');
+    if (wrap) wrap.classList.remove('typing');
+    setFixUi(lastVerifyFailed ? 'ready' : 'hidden');
+    const goBtn = $('#lcGo');
+    if (goBtn) { goBtn.disabled = false; goBtn.classList.remove('loading'); }
+  }
 }
 
 function showLimitSlot(msg, showUpgradeBtn = true){
@@ -1724,7 +1927,9 @@ function formatCode(){
 }
 
 /* ---------- Single-Roundtrip Turbo SSE Stream (/api/lokicode/stream) ---------- */
+let lastStreamVerify = null;
 async function streamLokiCodeTurbo(payload, onToken){
+  lastStreamVerify = null;
   const headers = { 'Content-Type': 'application/json' };
   const tok = window.LZAuth?.getToken?.();
   if (tok) headers['x-lz-token'] = tok;
@@ -1781,6 +1986,13 @@ async function streamLokiCodeTurbo(payload, onToken){
             full += j.delta;
             if (onToken) onToken(j.delta, full);
           }
+          // Server repetition guard / dedupe / auto-fix replaced the buffer
+          if (typeof j.reset === 'string') {
+            full = j.reset;
+            if (onToken) onToken('', full);
+          }
+          if (j.verify) lastStreamVerify = j.verify;
+          if (j.status) { try { advanceWorkStep(j.status); } catch (_s) {} }
         } catch (_e) {}
       }
     }
@@ -1947,8 +2159,8 @@ async function generate(e){
     }
 
     let audited = quickStaticSanitize(generatedCode, l.id);
-    // If LSL or MATLAB script was generated, run instant deterministic compiler normalization (<2ms)
-    if (l.id === 'lsl' || l.id === 'matlab') {
+    // Stream already ran the real compiler + fix loop. Only call verify if the stream omitted it.
+    if (!lastStreamVerify) {
       try {
         const vRes = await fetch('/api/lokicode/verify', {
           method: 'POST',
@@ -1969,14 +2181,44 @@ async function generate(e){
       const diffBtn = $('#lcDiffToggle');
       if (diffBtn) diffBtn.hidden = false;
     }
-    setCode(audited.code, true);
+    setCode(audited.code, !!(lastStreamVerify && lastStreamVerify.ok));
     if (diffViewOpen) renderDiffView();
 
     const lineCount = audited.code.split('\n').length;
     const tokens = (audited.code.match(/\S+/g) || []).length;
     updateTokenAudit('All symbols valid', tokens);
     advanceWorkStep(`3. Syntax & structural audit (${lineCount} lines) complete.`);
-    finishWorkUI(`✓ Generated & verified ${lineCount} lines of ${l.name} (${tokens} symbols)`);
+    const sv = lastStreamVerify;
+    if (sv && (sv.compiler || sv.method)) {
+      const runTxt = sv.run && sv.run.ran ? (sv.run.ok ? (sv.run.eventsRun && sv.run.eventsRun.length ? ` · test run OK (${sv.run.eventsRun.join(', ')})` : ' · test run OK') : ' · test run failed') : '';
+      const engineTxt = sv.run && sv.run.ran && sv.run.engine && !String(sv.compiler || '').includes(sv.run.engine) ? ` + ${sv.run.engine}` : '';
+      const fixTxt = sv.fixPasses ? ` · ${sv.fixPasses} auto-fix pass${sv.fixPasses > 1 ? 'es' : ''}` : '';
+      const extras = [sv.loopStopped ? 'repetition loop stopped' : '', sv.repeatsRemoved ? `${sv.repeatsRemoved} repeated lines removed` : ''].filter(Boolean).join(' · ');
+      const timeTxt = `${sv.verifyMs ?? sv.ms ?? 0} ms`;
+      const tool = sv.compiler || sv.method;
+      const isLsl = l.id === 'lsl' || sv.lang === 'lsl';
+      if (sv.ok) {
+        finishWorkUI(`✓ Compiled & verified ${lineCount} lines of ${l.name}`);
+        const title = isLsl ? `✓ Compiles for OpenSim / Eureka World · ${lineCount} lines` : `✓ Verified ${l.name} · ${lineCount} lines`;
+        showVerifyBanner('ok', title, `${tool}${engineTxt}${runTxt}${fixTxt} · ${timeTxt}${extras ? ' · ' + extras : ''}`);
+      } else {
+        const issues = (sv.issues && sv.issues.length)
+          ? sv.issues
+          : (sv.errors || []).map((e) => e && e.message != null ? `L${e.line}:${e.col ?? 0} ${e.message}` : String(e));
+        const failTitle = sv.compiled && sv.run && !sv.run.ok
+          ? `⚠ Compiles, but the test run found a problem`
+          : `✗ ${issues.length} ${l.name} compiler/runtime issue(s)`;
+        finishWorkUI(`⚠ Generated ${lineCount} lines of ${l.name} · ${issues.length} issue(s)`);
+        showVerifyBanner('fixed', failTitle, `${issues.slice(0, 3).join(' · ')} · ${tool}${fixTxt}`);
+      }
+      // Only mark verified when the real compiler/runtime said so.
+      st.verified = !!sv.ok;
+      updateFile();
+    } else {
+      finishWorkUI(`Generated ${lineCount} lines of ${l.name} (${tokens} symbols)`);
+      st.verified = false;
+      updateFile();
+    }
 
     if (imgsSnapshot.length > 0) {
       attachedImages = [];
@@ -1995,7 +2237,7 @@ async function generate(e){
     });
 
     A.sound && A.sound('done');
-    A.toast(`✓ ${l.name} code ${st.mode === 'edit' ? 'edited' : 'generated'} & verified!`, 'ok');
+    A.toast(lastStreamVerify && lastStreamVerify.ok ? `✓ ${l.name} code ${st.mode === 'edit' ? 'edited' : 'generated'} & verified!` : `Generated ${l.name} code`, lastStreamVerify && lastStreamVerify.ok === false ? 'err' : 'ok');
   } catch (err) {
     if (err && err.code === 'LIMIT_REACHED') {
       finishWorkUI(`⚠️ Limit reached`);
@@ -2018,6 +2260,35 @@ async function generate(e){
 }
 
 /* ---------- Static Code Sanitizer & Final Auto-Fix ---------- */
+// Collapse a block (2-40 lines) repeated 3+ times in a row, or a line repeated 4+ times (model repetition loops).
+function collapseRepeatedBlocksClient(code){
+  const norm = (l) => l.trim().replace(/\s+/g, ' ');
+  const meaningful = (l) => (l.match(/[A-Za-z0-9_]/g) || []).length >= 6;
+  let lines = String(code || '').split('\n');
+  let removed = 0;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const n = lines.map(norm);
+    outer: for (let size = 1; size <= 40; size++) {
+      const need = size === 1 ? 4 : 3;
+      for (let i = 0; i + size * need <= lines.length; i++) {
+        const block = n.slice(i, i + size);
+        if (!block.some(meaningful)) continue;
+        let copies = 1, j = i + size;
+        while (j + size <= lines.length && n.slice(j, j + size).every((l, k) => l === block[k])) { copies++; j += size; }
+        if (copies >= need) {
+          removed += (copies - 1) * size;
+          lines = lines.slice(0, i + size).concat(lines.slice(j));
+          changed = true;
+          break outer;
+        }
+      }
+    }
+  }
+  return { code: lines.join('\n'), removed };
+}
+
 function quickStaticSanitize(code, langId){
   let fixed = String(code || '').replace(/\r\n/g, '\n').trim();
   const fixes = [];
@@ -2025,6 +2296,12 @@ function quickStaticSanitize(code, langId){
   if (/^```/.test(fixed)) {
     fixed = extractCode(fixed);
     fixes.push('Removed stray markdown code fences');
+  }
+
+  const dd = collapseRepeatedBlocksClient(fixed);
+  if (dd.removed > 0) {
+    fixed = dd.code;
+    fixes.push(`Removed ${dd.removed} repeated line(s)`);
   }
 
   if (['java', 'lsl', 'javascript', 'typescript', 'cpp', 'csharp', 'rust', 'go'].includes(langId)) {
@@ -2076,122 +2353,60 @@ async function verifyFinalCode(){
     const words = (rawCode.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || []);
     updateTokenAudit(words[words.length - 1] || 'main', words.length);
 
-    // Fast deterministic LSL2/Mono compiler check (<10ms)
-    if (l.id === 'lsl') {
-      const vRes = await fetch('/api/lokicode/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lang: 'lsl', code: rawCode })
-      });
-      if (vRes.ok) {
-        const vj = await vRes.json();
-        if (vj.code && vj.code !== rawCode) {
-          setCode(vj.code, vj.valid);
-        } else {
-          st.verified = !!vj.valid;
-          updateFile();
-          save();
-        }
-        const stats = vj.stats || {};
-        const memKb = ((stats.estimatedMonoBytes || 0) / 1024).toFixed(1);
-        const metricSummary = `${stats.states || 1} state · ${stats.events || 0} events · ${stats.llCalls || 0} ll* calls · ~${memKb}/64 KB Mono`;
-        if (!vj.valid && Array.isArray(vj.errors) && vj.errors.length) {
-          finishWorkUI(`⚠ Found ${vj.errors.length} LSL compiler issue(s)`);
-          showVerifyBanner('fixed', `⚠ LSL Compiler Diagnostics (${vj.errors.length})`, vj.errors.join(' · ') + ' | ' + metricSummary);
-          A.toast('LSL diagnostics detected — review banner!', 'err');
-          return;
-        }
-        if (Array.isArray(vj.fixes) && vj.fixes.length) {
-          finishWorkUI(`✓ Auto-fixed ${vj.fixes.length} LSL syntax slip(s) · ${metricSummary}`);
-          showVerifyBanner('fixed', `⚡ Auto-Fixed ${vj.fixes.length} LSL Syntax Issue(s)`, vj.fixes.join(' · ') + ' | ' + metricSummary);
-          A.sound && A.sound('done');
-          A.toast('🔧 LSL script auto-fixed and verified!', 'ok');
-          return;
-        }
-        const warnNote = Array.isArray(vj.warnings) && vj.warnings.length ? ` · Note: ${vj.warnings[0]}` : '';
-        finishWorkUI(`✓ Verified LSL2/Mono · ${metricSummary}`);
-        showVerifyBanner('ok', `✓ LSL2 Mono Verified — 0 Errors Found!`, `${metricSummary}${warnNote}`);
-        A.sound && A.sound('done');
-        A.toast('✓ LSL2/Mono script verified — 0 errors!', 'ok');
-        return;
-      }
-    }
-
-    if (window.LZ?.Usage && !window.LZ.Usage.canUse()) {
-      const msg = "It's not possible because your limit has reached the maximum.";
-      showLimitSlot(msg);
-      A.toast(msg, 'err');
+    // Real compiler / parser / sandboxed run for every language (same endpoint as generate).
+    const vRes = await fetch('/api/lokicode/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lang: l.id, code: staticCheck.code || rawCode })
+    });
+    if (!vRes.ok) {
+      st.verified = false;
+      updateFile();
+      finishWorkUI('⚠ Verifier unavailable');
+      showVerifyBanner('fixed', 'Verifier unavailable', 'The compile/verify service did not respond. This code was not marked verified.', { showFix: false, unavailable: true });
+      A.toast('Verifier unavailable — not marked verified', 'err');
       return;
     }
-
-    advanceWorkStep(`Checking variable scopes, runtime safety & exception handlers…`);
-    const auditSys = `You are the LokiCode Final Code Verifier (Lokizen 4.0 Stark).
-Inspect the user's ${l.name} code for any syntax errors, undeclared variables, or bugs.
-Return ONLY valid JSON in this exact format:
-{"valid": true|false, "issues": ["short description"], "fixedCode": "only if valid is false, otherwise empty"}`;
-
-    let aiAudit = null;
-    try {
-      aiAudit = await LZ.chatJSON([
-        {role: 'system', content: auditSys},
-        {role: 'user', content: `Language: ${l.name}\nCode:\n\`\`\`${l.id}\n${staticCheck.code}\n\`\`\``}
-      ], {tier: 'stark', level: 1, maxTokens: 3000});
-    } catch (e) {
-      if (e && e.code === 'LIMIT_REACHED') throw e;
+    const vj = await vRes.json();
+    if (vj.code && vj.code !== rawCode) {
+      setCode(vj.code, !!vj.valid);
+    } else {
+      st.verified = !!vj.valid;
+      updateFile();
+      save();
     }
-
-    if (aiAudit && aiAudit.valid === false && aiAudit.fixedCode && aiAudit.fixedCode.trim()) {
-      const cleanedFix = extractCode(aiAudit.fixedCode);
-      if (cleanedFix && cleanedFix.length > 5) {
-        setCode(cleanedFix, true);
-        window.LZCodeTeams?.broadcastSync?.({
-          status: 'worked',
-          statusDetail: `Auto-fixed & verified ${l.name}`,
-          code: cleanedFix,
-          lang: l.id,
-          activity: `Auto-fixed ${l.name} syntax`
-        });
-        finishWorkUI(`✓ Auto-fixed syntax errors & verified ${l.name} code`);
-        showVerifyBanner('fixed', `⚡ Auto-Fixed Errors in ${l.name}`, `Fixes applied: ${(aiAudit.issues || []).join(' · ')}`);
-        A.sound && A.sound('done');
-        A.toast('🔧 Errors found and fixed automatically!', 'ok');
-        return;
-      }
-    }
-
-    if (staticCheck.fixes.length > 0) {
-      setCode(staticCheck.code, true);
-      window.LZCodeTeams?.broadcastSync?.({
-        status: 'worked',
-        statusDetail: `Auto-fixed structural issues`,
-        code: staticCheck.code,
-        lang: l.id
-      });
-      finishWorkUI(`✓ Auto-fixed ${staticCheck.fixes.length} structural issue(s)`);
-      showVerifyBanner('fixed', `⚡ Auto-Fixed ${staticCheck.fixes.length} Structural Issue(s)`, staticCheck.fixes.join(' · '));
-      A.sound && A.sound('done');
-      A.toast('🔧 Code fixed and verified!', 'ok');
+    const tool = vj.compiler || vj.method || 'compiler';
+    const run = vj.run;
+    const runTxt = run && run.ran ? (run.ok ? (run.eventsRun && run.eventsRun.length ? ` · test run OK (${run.eventsRun.join(', ')})` : ' · test run OK') : ' · test run failed') : '';
+    const timeTxt = `${vj.verifyMs ?? vj.ms ?? 0} ms`;
+    const fixNote = Array.isArray(vj.fixes) && vj.fixes.length ? ` · ${vj.fixes.join(' · ')}` : '';
+    const stats = vj.stats || {};
+    const lslMetrics = l.id === 'lsl' && (stats.events || stats.llCalls)
+      ? ` · ${stats.states || 1} state · ${stats.events || 0} events · ${stats.llCalls || 0} ll* calls`
+      : '';
+    if (!vj.valid) {
+      const errs = Array.isArray(vj.errors) ? vj.errors : [];
+      finishWorkUI(`⚠ Found ${errs.length || 'a'} ${l.name} issue(s)`);
+      showVerifyBanner('fixed', `✗ ${l.name} verification failed`, (errs.slice(0, 3).join(' · ') || 'compile/run error') + ` · ${tool} · ${timeTxt}`);
+      A.toast(`${l.name} diagnostics — review the banner`, 'err');
       return;
     }
-
-    st.verified = true;
-    updateFile();
-    save();
-    const lines = rawCode.split('\n').length;
-    finishWorkUI(`✓ Verified ${lines} lines · ${words.length} identifiers · 0 errors`);
-    showVerifyBanner('ok', `✓ Code Verified — 0 Errors Found!`, `All ${words.length} identifiers, brackets, and ${l.name} syntax rules passed verification.`);
+    finishWorkUI(`✓ Verified ${l.name} · ${tool}`);
+    showVerifyBanner('ok', `✓ ${l.name} verified`, `${tool}${runTxt}${fixNote}${lslMetrics} · ${timeTxt}`);
     A.sound && A.sound('done');
-    A.toast('✓ Final code verified — 0 errors!', 'ok');
+    A.toast(`✓ ${l.name} verified — ${tool} · ${timeTxt}`, 'ok');
+
   } catch (err) {
     if (err && err.code === 'LIMIT_REACHED') {
       finishWorkUI('⚠️ Daily limit reached');
       showLimitSlot(err.message);
       A.toast(err.message, 'err');
     } else {
-      finishWorkUI('✓ Static verification passed');
-      st.verified = true;
+      st.verified = false;
       updateFile();
-      showVerifyBanner('ok', `✓ Code Verified — Ready to Run`, `Structure and brackets passed static inspection.`);
+      finishWorkUI('⚠ Verification failed');
+      showVerifyBanner('fixed', 'Verification failed', err && err.message ? err.message : 'The compiler did not return a result. This code was not marked verified.');
+      A.toast('Verification failed', 'err');
     }
   } finally {
     if (verifyBtn) {
@@ -2964,6 +3179,7 @@ function init(){
   }
 
   // Panel action buttons
+  ensureFixUi();
   if ($('#lcVerify')) $('#lcVerify').onclick = verifyFinalCode;
   if ($('#lcRun')) $('#lcRun').onclick = run;
   if ($('#lcExplain')) $('#lcExplain').onclick = explain;
@@ -3048,6 +3264,6 @@ function init(){
   });
 }
 
-window.LokiCode = {open, onShow, run, verifyFinalCode, saveCodeToHistory, LANGS, setMode, onTeamUpdate, applyServerCodeState, refreshAiIdeas};
+window.LokiCode = {open, onShow, run, verifyFinalCode, fixUntilZero, saveCodeToHistory, LANGS, setMode, onTeamUpdate, applyServerCodeState, refreshAiIdeas};
 init();
 })();

@@ -71,6 +71,13 @@ Unpin|בטל הצמדה|إلغاء التثبيت
 Unpinned|ההצמדה בוטלה|أُلغي التثبيت
 Rename|שנה שם|إعادة تسمية
 Delete|מחק|حذف
+Delete this chat?|למחוק את הצ׳אט הזה?|حذف هذه المحادثة؟
+Apply|החל|تطبيق
+Background applied|הרקע הוחל|تم تطبيق الخلفية
+Animated backgrounds|רקעים מונפשים|خلفيات متحركة
+None|ללא|بدون
+Sign out|התנתק|تسجيل الخروج
+Sign out every other device? This browser stays signed in.|לנתק את כל שאר המכשירים? הדפדפן הזה יישאר מחובר.|تسجيل الخروج من كل الأجهزة الأخرى؟ يبقى هذا المتصفح مسجّلاً.
 Chat deleted|הצ׳אט נמחק|حُذفت المحادثة
 No chats yet.|אין עדיין צ׳אטים.|لا توجد محادثات بعد.
 Start a conversation ✦|התחילו שיחה ✦|ابدأ محادثة ✦
@@ -482,6 +489,44 @@ Reset Dock Position|אפס מיקום לעגינה|إعادة تعيين الم�
 Hold & drag Loki anywhere on screen, or reset to dock|החזק וגרור את לוקי לכל מקום במסך, או אפס לעגינה|اسحب لوكي إلى أي مكان على الشاشة أو أعده لمكانه
 An animated buddy that reacts while Lokizenith works (Hold & drag Loki anywhere!)|חבר מונפש שמגיב בזמן שלוקיזנית עובד (אפשר להחזיק ולגרור אותו לכל מקום!)|رفيق متحرك يتفاعل أثناء عمل Lokizenith (اسحبه لأي مكان!)
 Loki returned to the dock!|לוקי חזר לעמדת העגינה!|عاد لوكي إلى مكانه!
+Download App|הורדת האפליקציה|تنزيل التطبيق
+Windows · Android APK|Windows · APK לאנדרואיד|Windows · APK لأندرويد
+Download Lokizenith AI|הורידו את Lokizenith AI|نزّل Lokizenith AI
+Lokiz Studios|Lokiz Studios|Lokiz Studios
+Independent apps|אפליקציות עצמאיות|تطبيقات مستقلة
+Install a standalone Windows or Android app. Each app can be updated separately from the website. Sign in with the same Lokizenith account — a new user on mobile or PC appears in the website admin users list, and chats stay in sync.|התקינו אפליקציה עצמאית ל-Windows או לאנדרואיד. אפשר לעדכן כל אפליקציה בנפרד מהאתר. התחברו עם אותו חשבון Lokizenith — משתמש חדש במובייל או במחשב מופיע ברשימת המשתמשים של מנהל האתר, והשיחות נשארות מסונכרנות.|ثبّت تطبيق Windows أو Android مستقلًا. يمكن تحديث كل تطبيق بمعزل عن الموقع. سجّل الدخول بنفس حساب Lokizenith — يظهر المستخدم الجديد على الجوال أو الكمبيوتر في قائمة مستخدمي المشرف على الموقع، وتبقى المحادثات متزامنة.
+App version|גרסת האפליקציה|إصدار التطبيق
+Same accounts as|אותם חשבונות כמו|نفس الحسابات كما في
+Auto-update check|בדיקת עדכון אוטומטית|فحص التحديث التلقائي
+Windows|Windows|Windows
+Android|Android|أندرويد
+A native PC app with a system tray, a global hotkey, local file access, offline cache, notifications, and auto-update — abilities the website and the Android app do not have.|אפליקציית מחשב עם מגש מערכת, קיצור מקשים כללי, גישה לקבצים מקומיים, מטמון לא מקוון, התראות ועדכון אוטומטי — יכולות שאין באתר ובאפליקציית אנדרואיד.|تطبيق كمبيوتر أصلي مع شريط النظام ومفتاح اختصار عام والوصول إلى الملفات المحلية وذاكرة تخزين مؤقت دون اتصال وإشعارات وتحديث تلقائي — ميزات غير موجودة في الموقع وتطبيق أندرويد.
+Download for Windows|הורדה ל-Windows|تنزيل لـ Windows
+A signed release APK that opens Lokizenith AI as its own app. Use the same account as the website and the Windows app. Chats, settings, and LokiCode stay in sync.|קובץ APK חתום שפותח את Lokizenith AI כאפליקציה עצמאית. השתמשו באותו חשבון כמו באתר ובאפליקציית Windows. שיחות, הגדרות ו-LokiCode נשארים מסונכרנים.|ملف APK موقّع يفتح Lokizenith AI كتطبيق مستقل. استخدم نفس حساب الموقع وتطبيق Windows. تبقى المحادثات والإعدادات وLokiCode متزامنة.
+Download for Android (APK)|הורדה לאנדרואיד (APK)|تنزيل لأندرويد (APK)
+PC-only abilities|יכולות רק במחשב|ميزات خاصة بالكمبيوتر
+Shared data across website, PC, and Android|נתונים משותפים בין האתר, המחשב ואנדרואיד|بيانات مشتركة بين الموقع والكمبيوتر وأندرويد
+Both apps load your Lokizenith account through the same secure backend as the website. If you create an account in the Windows or Android app, it is added to the admin users list on the website, and the other app can sign in with it. Conversations, settings, usage, and LokiCode workspaces stay in sync because they live on the server — not only on one device.|שתי האפליקציות טוענות את חשבון Lokizenith שלכם דרך אותו שרת מאובטח כמו האתר. אם תיצרו חשבון באפליקציית Windows או אנדרואיד, הוא יתווסף לרשימת המשתמשים של מנהל האתר, ואפשר להתחבר אליו גם מהאפליקציה השנייה. שיחות, הגדרות, שימוש וסביבות LokiCode נשארים מסונכרנים כי הם נשמרים בשרת — לא רק במכשיר אחד.|يحمّل كلا التطبيقين حساب Lokizenith عبر نفس الخادم الآمن للموقع. إذا أنشأت حسابًا في تطبيق Windows أو أندرويد، يُضاف إلى قائمة مستخدمي المشرف على الموقع، ويمكن للتطبيق الآخر تسجيل الدخول به. تبقى المحادثات والإعدادات والاستخدام ومساحات LokiCode متزامنة لأنها محفوظة على الخادم — وليس على جهاز واحد فقط.
+About “unknown app” and safety warnings|על אזהרות “אפליקציה לא מוכרת” ובטיחות|حول تحذيرات “تطبيق غير معروف” والسلامة
+The installer is published by Lokiz Studios with a proper name, icon, and version info. It is not yet Authenticode-signed, so Windows SmartScreen may show “Windows protected your PC.” Click More info, then Run anyway. A paid Organization Validation (OV) code-signing certificate (typically $150–300/year from DigiCert, Sectigo or similar) or Azure Artifact Signing (formerly Trusted Signing, $9.99/month — currently for organizations in the US, Canada, EU and UK, and individuals in the US and Canada) lets Windows show the publisher name and lets reputation build across versions. EV certificates (about $400+/year) no longer skip SmartScreen on first download. Listing the app in the Microsoft Store is what removes the warning completely. A self-signed certificate does not help.|קובץ ההתקנה מפורסם על ידי Lokiz Studios עם שם, סמל ופרטי גרסה. הוא עדיין לא חתום ב-Authenticode, ולכן Windows SmartScreen עלול להציג “Windows protected your PC.” לחצו More info ואז Run anyway. תעודת OV בתשלום (בדרך כלל 150–300 דולר לשנה) או Azure Artifact Signing (9.99 דולר לחודש, כיום בעיקר לארה״ב/קנדה/האיחוד האירופי/בריטניה) מציגות את שם המפרסם ובונות מוניטין בין גרסאות. תעודת EV (כ-400+ דולר לשנה) כבר לא מדלגת על SmartScreen בהורדה הראשונה. פרסום ב-Microsoft Store הוא מה שמסיר את האזהרה לגמרי.|ينشر Lokiz Studios المُثبّت باسم ورمز ومعلومات إصدار صحيحة. لم يُوقَّع بعد بتوقيع Authenticode، لذلك قد يُظهر Windows SmartScreen “Windows protected your PC.” انقر More info ثم Run anyway. شهادة OV مدفوعة (عادة 150–300 دولار سنويًا) أو Azure Artifact Signing (9.99 دولار شهريًا، ومتاح حاليًا بشكل أساسي في الولايات المتحدة وكندا والاتحاد الأوروبي والمملكة المتحدة) تُظهر اسم الناشر وتبني السمعة عبر الإصدارات. شهادات EV (نحو 400+ دولار سنويًا) لم تعد تتجاوز SmartScreen عند أول تنزيل. النشر في Microsoft Store هو ما يزيل التحذير تمامًا.
+Sideloaded APKs always show the system “install unknown apps” prompt unless the app is installed from Google Play. This APK is a signed release build with a stable Lokiz Studios key, current target Android API, and only the permissions the app needs. Play Protect warnings are reduced by that signing, and they go away after the $25 Play Console listing and Play Protect / Play Store review.|קבצי APK שמורידים ישירות תמיד מציגים את ההודעה “התקנת אפליקציות לא מוכרות”, אלא אם מתקינים מ-Google Play. ה-APK הזה הוא בניית הפצה חתומה עם מפתח קבוע של Lokiz Studios, API עדכני של אנדרואיד, ורק ההרשאות שהאפליקציה צריכה. אזהרות Play Protect מופחתות בזכות החתימה, והן נעלמות אחרי רישום ב-Play Console ב-25 דולר ובדיקת Play Protect / Play Store.|تُظهر ملفات APK الجانبية دائمًا تنبيه النظام “تثبيت التطبيقات غير المعروفة” ما لم يُثبَّت التطبيق من Google Play. هذا ملف APK إصداري موقّع بمفتاح ثابت من Lokiz Studios ويستهدف واجهة أندرويد الحالية ويطلب فقط الأذونات اللازمة. تقل تحذيرات Play Protect بفضل ذلك التوقيع، وتزول بعد التسجيل في Play Console مقابل 25 دولارًا ومراجعة Play Protect / Play Store.
+You're using the|אתם משתמשים ב|أنت تستخدم
+Windows app|אפליקציית Windows|تطبيق Windows
+Android app|אפליקציית אנדרואיד|تطبيق أندرويد
+The website and both apps share the same accounts, chats, and admin user list.|האתר ושתיהן האפליקציות חולקים את אותם חשבונות, שיחות ורשימת משתמשי מנהל.|يشترك الموقع وكلا التطبيقين في نفس الحسابات والمحادثات وقائمة مستخدمي المشرف.
+Loading download details…|טוען את פרטי ההורדה…|جارٍ تحميل تفاصيل التنزيل…
+The download catalog could not be loaded. Please try again in a moment.|לא ניתן היה לטעון את קטלוג ההורדות. נסו שוב בעוד רגע.|تعذّر تحميل قائمة التنزيلات. حاول مرة أخرى بعد لحظات.
+Open local files (Windows app)|פתח קבצים מקומיים (אפליקציית Windows)|افتح ملفات محلية (تطبيق Windows)
+A new Lokizenith AI app is available: v|גרסה חדשה של אפליקציית Lokizenith AI זמינה: v|يتوفر إصدار جديد من تطبيق Lokizenith AI: v
+System tray with quick New Chat, Show/Hide, and Quit|מגש מערכת עם צ׳אט חדש, הצג/הסתר ויציאה|شريط النظام مع دردشة جديدة وإظهار/إخفاء وخروج
+Global hotkey Ctrl+Shift+L to show or hide the window|קיצור מקשים Ctrl+Shift+L להצגה או הסתרה של החלון|اختصار Ctrl+Shift+L لإظهار النافذة أو إخفائها
+Open local files from disk and attach them to chat|פתיחת קבצים מקומיים וצירוף שלהם לצ׳אט|فتح ملفات من القرص وإرفاقها بالدردشة
+Offline cache so the last session can reopen without a connection|מטמון לא מקוון כדי לפתוח מחדש את הסשן האחרון בלי חיבור|ذاكرة مؤقتة دون اتصال لإعادة فتح آخر جلسة بدون اتصال
+Native Windows notifications|התראות Windows מקוריות|إشعارات Windows أصلية
+Automatic update check against lokizenith.com|בדיקת עדכונים אוטומטית מול lokizenith.com|فحص تحديث تلقائي عبر lokizenith.com
+Windows 10 or later · 64-bit installer|Windows 10 ומעלה · קובץ התקנה 64 סיביות|Windows 10 أو أحدث · مثبّت 64 بت
+Android 8.0 or later · signed APK|אנדרואיד 8.0 ומעלה · APK חתום|أندرويد 8.0 أو أحدث · APK موقّع
+What's new · v2.7|מה חדש · v2.7|ما الجديد · v2.7
 `;
 const DICT = new Map();
 RAW.trim().split('\n').forEach(l => { const p = l.split('|'); if (p.length === 3) DICT.set(p[0].trim(), {he: p[1].trim(), ar: p[2].trim()}); });

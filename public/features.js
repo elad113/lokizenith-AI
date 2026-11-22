@@ -237,7 +237,7 @@ function labURL(body){
     const w = A.Work($('#usWork'), {open: true});
     try {
       w.log(t('Reading') + ' ' + LZ.domainOf(u));
-      const page = await LZ.readPage(u, 24000);
+      const page = await LZ.readPage(u, 24000, undefined, 4000);
       if (!page || page.length < 200) throw Object.assign(new Error(t('Could not read that page (it may block readers or need a login).')), {userFacing: true});
       const words = page.split(/\s+/).length;
       w.log(t('Summarizing') + ` · ${Math.round(words / 100) / 10}k ${t('words')}`);
@@ -384,8 +384,98 @@ function compileFormula(jsExpr, vars, fallbackLatex, fallbackExprText){
   return { fn: fallbackFn, varNames, expr: 'universal' };
 }
 
+/* ---- 2.9.3 Formula Calculator engine (BUI-20): synchronous recompute (no rAF hop), one precompiled
+   function, graph / solve-for / units / steps redrawn at most once per frame, saved & recent formulas,
+   share links. ---- */
+const FC_SAVED = 'lz.formulaSaved.v1', FC_RECENT = 'lz.formulaRecent.v1';
+const fcLoad = k => { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch(_){ return []; } };
+const fcStore = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch(_){} };
+const fcKey = d => String((d.title || '') + '|' + (d.jsExpression || '')).toLowerCase();
+function fcRemember(d){
+  const r = fcLoad(FC_RECENT).filter(x => fcKey(x) !== fcKey(d));
+  r.unshift(Object.assign({}, d, {_at: Date.now()})); fcStore(FC_RECENT, r.slice(0, 16));
+}
+function fcIsSaved(d){ return fcLoad(FC_SAVED).some(x => fcKey(x) === fcKey(d)); }
+function fcToggleSaved(d){
+  const s = fcLoad(FC_SAVED); const k = fcKey(d);
+  const on = !s.some(x => fcKey(x) === k);
+  fcStore(FC_SAVED, on ? [Object.assign({}, d, {_at: Date.now()}), ...s].slice(0, 60) : s.filter(x => fcKey(x) !== k));
+  return on;
+}
+const b64u = {
+  enc: s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: s => decodeURIComponent(escape(atob(String(s).replace(/-/g, '+').replace(/_/g, '/'))))
+};
+function fcShareUrl(d, vals){
+  const slim = {t: d.title, dm: d.domain, l: d.latex, x: d.expressionText, rl: d.resultLabel, u: d.unit, j: d.jsExpression,
+    v: (d.variables || []).map((v, i) => [v.symbol, v.label, v.unit, vals ? vals[i] : v.defaultVal, v.min, v.max, v.step])};
+  return location.origin + '/#formula=' + b64u.enc(JSON.stringify(slim));
+}
+function fcFromShare(code){
+  try {
+    const o = JSON.parse(b64u.dec(code));
+    if (!o || !Array.isArray(o.v) || !o.j) return null;
+    return {title: String(o.t || 'Formula'), domain: String(o.dm || 'Formula'), latex: String(o.l || ''), expressionText: String(o.x || ''), resultLabel: String(o.rl || 'Result'), unit: String(o.u || ''), jsExpression: String(o.j),
+      variables: o.v.slice(0, 12).map(a => ({symbol: String(a[0]), label: String(a[1] || a[0]), unit: String(a[2] || ''), defaultVal: +a[3], min: +a[4], max: +a[5], step: +a[6]})), source: 'shared'};
+  } catch(_){ return null; }
+}
+// Unit conversions for the result (factor = multiply the base value).
+const FC_UNITS = {
+  'J': [['kJ', 1e-3], ['kWh', 1 / 3.6e6], ['cal', 1 / 4.184], ['kcal', 1 / 4184], ['eV', 1 / 1.602176634e-19]],
+  'N': [['kN', 1e-3], ['lbf', 1 / 4.4482216152605], ['kgf', 1 / 9.80665]],
+  'Pa': [['kPa', 1e-3], ['bar', 1e-5], ['atm', 1 / 101325], ['psi', 1 / 6894.757], ['mmHg', 1 / 133.322]],
+  'W': [['kW', 1e-3], ['hp', 1 / 745.7], ['BTU/h', 3.412142]],
+  'm': [['cm', 100], ['km', 1e-3], ['ft', 1 / 0.3048], ['in', 1 / 0.0254], ['mi', 1 / 1609.344]],
+  'cm': [['m', 1e-2], ['in', 1 / 2.54], ['mm', 10]],
+  'km': [['mi', 1 / 1.609344], ['m', 1e3]],
+  'm/s': [['km/h', 3.6], ['mph', 2.2369363], ['knots', 1.9438445], ['Mach', 1 / 343]],
+  'kg': [['g', 1e3], ['lb', 2.2046226], ['oz', 35.273962]],
+  's': [['ms', 1e3], ['min', 1 / 60], ['h', 1 / 3600], ['days', 1 / 86400]],
+  'm²': [['cm²', 1e4], ['ft²', 10.76391], ['acres', 1 / 4046.856]],
+  'm³': [['L', 1e3], ['US gal', 264.17205], ['ft³', 35.314667]],
+  'L': [['mL', 1e3], ['US gal', 0.26417205]],
+  'Hz': [['kHz', 1e-3], ['rpm', 60]],
+  'kWh': [['MJ', 3.6], ['kcal', 859.845]],
+  'kcal': [['kJ', 4.184]],
+  'nm': [['µm', 1e-3], ['Å', 10]],
+  'V': [['mV', 1e3], ['kV', 1e-3]],
+  'rpm': [['rad/s', Math.PI / 30], ['Hz', 1 / 60]]
+};
+function fcConversions(unit, v){
+  const u = String(unit || '').trim();
+  if (!Number.isFinite(v)) return [];
+  if (u === '°C' || u === 'C') return [['°F', v * 9 / 5 + 32], ['K', v + 273.15]];
+  if (u === '°F' || u === 'F') return [['°C', (v - 32) * 5 / 9], ['K', (v - 32) * 5 / 9 + 273.15]];
+  if (u === 'K') return [['°C', v - 273.15], ['°F', (v - 273.15) * 9 / 5 + 32]];
+  return (FC_UNITS[u] || []).map(([n, f]) => [n, v * f]);
+}
+/** Numeric solve: value of variable `idx` that makes f(...) === target (scan + bisection). */
+function fcSolve(fn, vals, idx, target, lo, hi){
+  const g = x => { const a = vals.slice(); a[idx] = x; const y = Number(fn(...a)); return Number.isFinite(y) ? y - target : NaN; };
+  const tryRange = (a, b) => {
+    const N = 400; let px = a, py = g(a), best = null;
+    for (let i = 1; i <= N; i++){
+      const x = a + (b - a) * i / N, y = g(x);
+      if (Number.isFinite(y) && (best == null || Math.abs(y) < Math.abs(best[1]))) best = [x, y];
+      if (Number.isFinite(py) && Number.isFinite(y) && (py === 0 || py * y < 0)){
+        let l = px, r = x, fl = py;
+        for (let k = 0; k < 80; k++){ const m = (l + r) / 2, fm = g(m); if (!Number.isFinite(fm)) break; if (fl * fm <= 0) r = m; else { l = m; fl = fm; } }
+        return {x: (l + r) / 2, exact: true};
+      }
+      px = x; py = y;
+    }
+    return best ? {x: best[0], exact: Math.abs(best[1]) < 1e-9 * Math.max(1, Math.abs(target)), approx: true} : null;
+  };
+  const span = Math.max(1e-9, hi - lo);
+  const r1 = tryRange(lo, hi); if (r1 && r1.exact) return r1;
+  const r2 = tryRange(lo - span * 10, hi + span * 10); if (r2 && r2.exact) return r2;
+  return r1 || r2;
+}
+
 function renderFormulaCard(d, host){
-  const box = host || el('div', 'fc-card');
+  const T0 = performance.now();
+  const box = host || el('div', 'fc-card fc-v2');
+  box.classList.add('fc-v2');
   box.setAttribute('data-noi18n', '');
   let vars = Array.isArray(d.variables) ? d.variables.filter(v => v && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(String(v.symbol || ''))) : [];
   if (!vars.length) {
@@ -395,198 +485,314 @@ function renderFormulaCard(d, host){
     ];
   }
   const compiled = compileFormula(d.jsExpression, vars, d.latex, d.expressionText);
+  const ranges = vars.map(v => {
+    const def = Number.isFinite(+v.defaultVal) ? +v.defaultVal : 1;
+    const mn = Number.isFinite(+v.min) ? +v.min : (def < 0 ? def * 2 : 0);
+    const mx = Number.isFinite(+v.max) && +v.max > mn ? +v.max : Math.max(100, Math.abs(def) * 4 || 100);
+    const st = Number.isFinite(+v.step) && +v.step > 0 ? +v.step : ((mx - mn) <= 5 ? 0.01 : (mx - mn) <= 25 ? 0.1 : 1);
+    return {def, mn, mx, st};
+  });
+  const saved = fcIsSaved(d);
   box.innerHTML = `<div class="fc-head">
       <div class="fc-head-left">
-        <span class="fc-domain">${esc(d.domain || 'Formula')}</span>
+        <span class="fc-domain">${esc(d.domain || 'Formula')}${d.source === 'library' ? ' · ⚡ instant' : ''}</span>
         <h3 class="fc-title" dir="auto">${esc(d.title || 'Formula Calculator')}</h3>
         ${d.description ? `<p class="fc-desc" dir="auto">${esc(d.description)}</p>` : ''}
       </div>
+      <div class="fc-head-acts">
+        <button type="button" class="btn-ghost fc-save ${saved ? 'on' : ''}" title="${esc(t('Save formula'))}">${saved ? '★' : '☆'} ${esc(t(saved ? 'Saved' : 'Save'))}</button>
+        <button type="button" class="btn-ghost fc-share" title="${esc(t('Copy share link'))}">🔗 ${esc(t('Share'))}</button>
+      </div>
     </div>
-    <div class="fc-formula-box" id="fcKatexMount">
+    <div class="fc-formula-box">
       <div class="fc-katex"></div>
       ${d.expressionText ? `<div class="fc-expr-plain" dir="ltr">${esc(d.expressionText)}</div>` : ''}
     </div>
     <div class="fc-vars-grid">${vars.map((v, i) => {
-      const def = Number.isFinite(+v.defaultVal) ? +v.defaultVal : 1;
-      const mn = Number.isFinite(+v.min) ? +v.min : (def < 0 ? def * 2 : 0);
-      const mx = Number.isFinite(+v.max) && +v.max > mn ? +v.max : Math.max(100, Math.abs(def) * 4 || 100);
-      const st = Number.isFinite(+v.step) && +v.step > 0 ? +v.step : ((mx - mn) <= 5 ? 0.01 : (mx - mn) <= 25 ? 0.1 : 1);
-      return `<div class="fc-var">
+      const {def, mn, mx, st} = ranges[i];
+      return `<div class="fc-var" data-idx="${i}">
         <label><span dir="auto">${esc(v.label || v.symbol)}${v.unit ? ` <small class="muted">(${esc(v.unit)})</small>` : ''}</span><code>${esc(v.symbol)}</code></label>
         <input type="number" step="any" class="fc-num" data-idx="${i}" value="${def}">
         <input type="range" class="fc-rng" data-idx="${i}" min="${mn}" max="${mx}" step="${st}" value="${Math.min(mx, Math.max(mn, def))}">
       </div>`;
     }).join('')}</div>
     <div class="fc-result-bar">
-      <div>
+      <div class="fc-res-main">
         <div class="fc-res-label">${esc(d.resultLabel || t('Calculated Result'))}${d.unit ? ` (${esc(d.unit)})` : ''}</div>
         <div class="fc-res-value" dir="ltr">—</div>
-        <div class="fc-res-sub muted" dir="ltr" style="font-size:12px;margin-top:4px;font-family:var(--mono)"></div>
+        <div class="fc-res-sub muted" dir="ltr"></div>
+        <div class="fc-units" dir="ltr"></div>
       </div>
       <div class="fc-res-acts">
         <button type="button" class="btn-ghost fc-copy-res">⧉ ${esc(t('Copy Result'))}</button>
         ${(d.latex || d.expressionText) ? `<button type="button" class="btn-ghost fc-copy-tex">⧉ LaTeX</button>` : ''}
       </div>
-    </div>`;
+    </div>
+    <div class="fc-tabs" role="tablist">
+      <button type="button" class="on" data-tab="graph">📈 ${esc(t('Graph'))}</button>
+      <button type="button" data-tab="solve">🎯 ${esc(t('Solve for'))}</button>
+      <button type="button" data-tab="steps">🪜 ${esc(t('Steps'))}</button>
+    </div>
+    <div class="fc-pane" data-pane="graph">
+      <div class="fc-graph-top"><span>${esc(t('Result vs'))}</span><select class="fc-xvar">${vars.map((v, i) => `<option value="${i}">${esc(v.symbol)} — ${esc(v.label || v.symbol)}</option>`).join('')}</select><span class="fc-hover muted" dir="ltr"></span></div>
+      <canvas class="fc-graph" height="190"></canvas>
+    </div>
+    <div class="fc-pane" data-pane="solve" hidden>
+      <div class="fc-solve-row"><span>${esc(t('Find'))}</span><select class="fc-svar">${vars.map((v, i) => `<option value="${i}">${esc(v.symbol)} — ${esc(v.label || v.symbol)}</option>`).join('')}</select><span>${esc(t('so that the result ='))}</span><input type="number" step="any" class="fc-target"><button type="button" class="btn-primary fc-solve-go">${esc(t('Solve'))}</button></div>
+      <div class="fc-solve-out muted" dir="ltr"></div>
+    </div>
+    <div class="fc-pane" data-pane="steps" hidden><ol class="fc-steps" dir="ltr"></ol></div>`;
 
-  // Render KaTeX asynchronously if script loads
   const kEl = $('.fc-katex', box);
-  katex().then(() => {
-    if (kEl && (d.latex || d.expressionText)) kEl.innerHTML = tex(d.latex || d.expressionText, true);
-  }).catch(() => {
-    if (kEl) kEl.textContent = d.expressionText || d.latex || '';
-  });
+  if (window.katex){ if (kEl && (d.latex || d.expressionText)) kEl.innerHTML = tex(d.latex || d.expressionText, true); }
+  else {
+    if (kEl) kEl.textContent = d.latex || d.expressionText || '';
+    katex().then(() => { if (kEl && (d.latex || d.expressionText)) kEl.innerHTML = tex(d.latex || d.expressionText, true); }).catch(() => { if (kEl) kEl.textContent = d.expressionText || d.latex || ''; });
+  }
 
+  const NF = new Intl.NumberFormat('en', { maximumFractionDigits: 6 });
   const fmtNum = (n) => {
-    if (!Number.isFinite(n)) return '0';
+    if (!Number.isFinite(n)) return '—';
     if (Math.abs(n) >= 1e9 || (Math.abs(n) > 0 && Math.abs(n) < 1e-4)) return n.toExponential(4);
-    return new Intl.NumberFormat('en', { maximumFractionDigits: 6 }).format(n);
+    return NF.format(n);
+  };
+  const numEls = vars.map((_v, i) => $(`.fc-num[data-idx="${i}"]`, box));
+  const rngEls = vars.map((_v, i) => $(`.fc-rng[data-idx="${i}"]`, box));
+  const outEl = $('.fc-res-value', box), subEl = $('.fc-res-sub', box), unitsEl = $('.fc-units', box);
+  const canvas = $('.fc-graph', box), xSel = $('.fc-xvar', box), hoverEl = $('.fc-hover', box);
+  const stepsEl = $('.fc-steps', box);
+  let tab = 'graph';
+  const fn = compiled && compiled.fn ? compiled.fn : (() => NaN);
+  const evalAt = (vals) => { try { const r = Number(fn(...vals)); return Number.isFinite(r) ? r : NaN; } catch(_){ return NaN; } };
+  const readVals = () => numEls.map(inp => { const v = parseFloat(inp && inp.value); return Number.isFinite(v) ? v : 0; });
+  let vals = readVals(), res = NaN, lastRes = NaN;
+
+  // Graph (≤ 1 draw per frame, 160 samples).
+  let gPending = 0, gCache = null;
+  const drawGraph = () => {
+    gPending = 0;
+    if (tab !== 'graph' || !canvas.isConnected) return;
+    const xi = +xSel.value || 0; const {mn, mx} = ranges[xi];
+    const W = canvas.clientWidth || 520, H = canvas.clientHeight || 190, dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (canvas.width !== Math.round(W * dpr)){ canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
+    const c = canvas.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
+    const N = 160, xs = new Float64Array(N + 1), ys = new Float64Array(N + 1); const a = vals.slice();
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i <= N; i++){ const x = mn + (mx - mn) * i / N; a[xi] = x; const y = evalAt(a); xs[i] = x; ys[i] = y; if (Number.isFinite(y)){ if (y < lo) lo = y; if (y > hi) hi = y; } }
+    if (!Number.isFinite(lo)){ c.fillStyle = 'rgba(255,255,255,.5)'; c.font = '12px Inter, sans-serif'; c.fillText('No finite values in this range', 12, 24); gCache = null; return; }
+    if (hi - lo < 1e-12){ hi += 1; lo -= 1; }
+    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    const X = x => 36 + (x - mn) / (mx - mn || 1) * (W - 46), Y = y => H - 22 - (y - lo) / (hi - lo) * (H - 34);
+    const acc = getComputedStyle(document.body).getPropertyValue('--acc').trim() || '#00ff9c';
+    c.strokeStyle = 'rgba(255,255,255,.08)'; c.lineWidth = 1; c.beginPath();
+    for (let k = 0; k <= 4; k++){ const yy = 12 + (H - 34) * k / 4; c.moveTo(36, yy); c.lineTo(W - 10, yy); } c.stroke();
+    if (lo < 0 && hi > 0){ c.strokeStyle = 'rgba(255,255,255,.22)'; c.beginPath(); c.moveTo(36, Y(0)); c.lineTo(W - 10, Y(0)); c.stroke(); }
+    c.fillStyle = 'rgba(255,255,255,.45)'; c.font = '10px JetBrains Mono, monospace';
+    c.fillText(fmtNum(hi - pad), 2, 16); c.fillText(fmtNum(lo + pad), 2, H - 24); c.fillText(fmtNum(mn), 36, H - 6); const mxs = fmtNum(mx); c.fillText(mxs, W - 10 - c.measureText(mxs).width, H - 6);
+    const grad = c.createLinearGradient(0, 0, W, 0); grad.addColorStop(0, acc); grad.addColorStop(1, '#3ce0ff');
+    c.strokeStyle = grad; c.lineWidth = 2.2; c.beginPath(); let pen = false;
+    for (let i = 0; i <= N; i++){ if (!Number.isFinite(ys[i])){ pen = false; continue; } const px = X(xs[i]), py = Y(ys[i]); if (!pen){ c.moveTo(px, py); pen = true; } else c.lineTo(px, py); }
+    c.stroke();
+    const cx = vals[xi], cy = res;
+    if (Number.isFinite(cy) && cx >= mn && cx <= mx){ c.fillStyle = '#fff'; c.beginPath(); c.arc(X(cx), Y(cy), 4.5, 0, Math.PI * 2); c.fill(); c.strokeStyle = acc; c.lineWidth = 2; c.stroke(); }
+    gCache = {X, Y, mn, mx, xi, W};
+  };
+  const scheduleGraph = () => { if (!gPending) gPending = requestAnimationFrame(drawGraph); };
+  canvas.addEventListener('mousemove', e => {
+    if (!gCache) return; const r = canvas.getBoundingClientRect(); const px = e.clientX - r.left;
+    const x = gCache.mn + (px - 36) / (gCache.W - 46) * (gCache.mx - gCache.mn); if (x < gCache.mn || x > gCache.mx){ hoverEl.textContent = ''; return; }
+    const a = vals.slice(); a[gCache.xi] = x; hoverEl.textContent = `${vars[gCache.xi].symbol} = ${fmtNum(x)} → ${fmtNum(evalAt(a))}${d.unit ? ' ' + d.unit : ''}`;
+  });
+  canvas.addEventListener('mouseleave', () => { hoverEl.textContent = ''; });
+
+  const renderSteps = () => {
+    if (tab !== 'steps') return;
+    const rhs = String(d.expressionText || '').includes('=') ? String(d.expressionText).split('=').slice(1).join('=').trim() : String(d.expressionText || compiled?.expr || '');
+    const lhs = String(d.expressionText || '').includes('=') ? String(d.expressionText).split('=')[0].trim() : (d.resultLabel || 'y');
+    const syms = vars.map((v, i) => [v.symbol, vals[i]]).sort((a, b) => b[0].length - a[0].length);
+    let sub = rhs;
+    for (const [s, v] of syms){ sub = sub.replace(new RegExp('(^|[^A-Za-z0-9_])' + s.replace(/[$^*+?.()|[\]{}\\]/g, '\\$&') + '(?![A-Za-z0-9_])', 'g'), (m0, p1) => p1 + '(' + fmtNum(v) + ')'); }
+    const items = [
+      `<li><b>${esc(t('Formula'))}:</b> ${esc(lhs)} = ${esc(rhs)}</li>`,
+      `<li><b>${esc(t('Known values'))}:</b> ${vars.map((v, i) => `${esc(v.symbol)} = ${esc(fmtNum(vals[i]))}${v.unit ? ' ' + esc(v.unit) : ''}`).join(', ')}</li>`,
+      `<li><b>${esc(t('Substitute'))}:</b> ${esc(lhs)} = ${esc(sub)}</li>`,
+      `<li><b>${esc(t('Evaluate'))}:</b> ${esc(lhs)} = <b class="fc-step-res">${esc(fmtNum(res))}${d.unit ? ' ' + esc(d.unit) : ''}</b></li>`
+    ];
+    stepsEl.innerHTML = items.join('');
   };
 
-  const recalc = () => {
-    const out = $('.fc-res-value', box);
-    const subOut = $('.fc-res-sub', box);
-    const vals = vars.map((_v, i) => {
-      const rawV = parseFloat($(`.fc-num[data-idx="${i}"]`, box)?.value);
-      return Number.isFinite(rawV) ? rawV : 0;
-    });
-    const varMap = {};
-    vars.forEach((v, i) => { varMap[String(v.symbol).toLowerCase()] = vals[i]; });
-
-    let res = NaN;
-    if (compiled && compiled.fn) {
-      try {
-        res = Number(compiled.fn(...vals));
-      } catch (_) {
-        res = NaN;
-      }
-    }
-    if (!Number.isFinite(res)) {
-      // Safe deterministic fallback so it NEVER shows N/A
-      const nonZero = vals.map(v => (Math.abs(v) < 1e-9 ? 1 : v));
-      res = nonZero.length >= 2
-        ? nonZero[0] / Math.hypot(...nonZero.slice(1))
-        : (vals[0] || 0);
-    }
-    out.textContent = fmtNum(res) + (d.unit ? ' ' + d.unit : '');
-
-    // If formula has spatial coordinates (x, y, z) and a field variable (e.g. phi), also show live vector breakdown!
-    if (subOut) {
-      const fieldKey = Object.keys(varMap).find(k => !['x','y','z','t'].includes(k));
-      if (fieldKey && ('x' in varMap) && ('y' in varMap)) {
-        const fVal = varMap[fieldKey];
-        const gx = fVal / (Math.abs(varMap.x) >= 1e-6 ? varMap.x : 1);
-        const gy = fVal / (Math.abs(varMap.y) >= 1e-6 ? varMap.y : 1);
-        if ('z' in varMap) {
-          const gz = fVal / (Math.abs(varMap.z) >= 1e-6 ? varMap.z : 1);
-          subOut.textContent = `∇ = (${fmtNum(gx)} x̂, ${fmtNum(gy)} ŷ, ${fmtNum(gz)} ẑ)  ·  |∇| = ${fmtNum(Math.hypot(gx, gy, gz))}`;
-        } else {
-          subOut.textContent = `∇ = (${fmtNum(gx)} x̂, ${fmtNum(gy)} ŷ)  ·  |∇| = ${fmtNum(Math.hypot(gx, gy))}`;
-        }
-      } else {
-        subOut.textContent = vars.map((v, i) => `${v.symbol} = ${fmtNum(vals[i])}`).join('  ·  ');
-      }
-    }
+  // Synchronous recompute: input → result in the same event (no requestAnimationFrame hop).
+  const recalcNow = () => {
+    vals = readVals();
+    res = evalAt(vals);
+    outEl.textContent = fmtNum(res) + (d.unit && Number.isFinite(res) ? ' ' + d.unit : '');
+    if (res !== lastRes){ outEl.classList.remove('pulse'); void outEl.offsetWidth; outEl.classList.add('pulse'); lastRes = res; }
+    subEl.textContent = vars.map((v, i) => `${v.symbol} = ${fmtNum(vals[i])}`).join('  ·  ');
+    const conv = fcConversions(d.unit, res);
+    unitsEl.innerHTML = conv.map(([u, v]) => `<button type="button" class="fc-unit" data-v="${esc(fmtNum(v) + ' ' + u)}">${esc(fmtNum(v))} <small>${esc(u)}</small></button>`).join('');
+    scheduleGraph(); renderSteps();
   };
+  unitsEl.addEventListener('click', e => { const b = e.target.closest('.fc-unit'); if (b) A.copyText(b.dataset.v); });
 
-  $$('.fc-num', box).forEach(inp => {
-    const handleNum = () => {
-      const rng = $(`.fc-rng[data-idx="${inp.dataset.idx}"]`, box);
-      const val = parseFloat(inp.value);
-      if (rng && Number.isFinite(val)) rng.value = val;
-      recalc();
-    };
-    inp.addEventListener('input', handleNum);
-    inp.addEventListener('change', handleNum);
+  box.addEventListener('input', e => {
+    const tg = e.target; const i = tg && tg.dataset ? tg.dataset.idx : undefined;
+    if (i == null) return;
+    if (tg.classList.contains('fc-num')){ const v = parseFloat(tg.value); if (Number.isFinite(v)) rngEls[i].value = v; }
+    else if (tg.classList.contains('fc-rng')) numEls[i].value = tg.value;
+    else return;
+    recalcNow();
   });
-  $$('.fc-rng', box).forEach(rng => {
-    const handleRng = () => {
-      const num = $(`.fc-num[data-idx="${rng.dataset.idx}"]`, box);
-      if (num) num.value = rng.value;
-      recalc();
-    };
-    rng.addEventListener('input', handleRng);
-    rng.addEventListener('change', handleRng);
+  box.addEventListener('change', e => { if (e.target && (e.target.classList.contains('fc-rng') || e.target.classList.contains('fc-num'))) A.sound('calc'); });
+  xSel.onchange = scheduleGraph;
+  $$('.fc-tabs button', box).forEach(b => b.onclick = () => {
+    tab = b.dataset.tab; A.sound('click');
+    $$('.fc-tabs button', box).forEach(x => x.classList.toggle('on', x === b));
+    $$('.fc-pane', box).forEach(p => p.hidden = p.dataset.pane !== tab);
+    if (tab === 'graph') scheduleGraph(); if (tab === 'steps') renderSteps();
+    if (tab === 'solve' && !$('.fc-target', box).value) $('.fc-target', box).value = Number.isFinite(res) ? +res.toPrecision(6) : '';
   });
-  $('.fc-copy-res', box).onclick = () => A.copyText($('.fc-res-value', box).textContent);
+  const solve = () => {
+    const si = +$('.fc-svar', box).value || 0; const target = parseFloat($('.fc-target', box).value);
+    const out = $('.fc-solve-out', box);
+    if (!Number.isFinite(target)){ out.textContent = t('Enter the result you want.'); return; }
+    const r = fcSolve(fn, readVals(), si, target, ranges[si].mn, ranges[si].mx);
+    if (!r || !Number.isFinite(r.x)){ out.textContent = t('No solution found in a sensible range.'); A.sound('error'); return; }
+    numEls[si].value = +r.x.toPrecision(8); rngEls[si].value = r.x; recalcNow();
+    out.innerHTML = `<b>${esc(vars[si].symbol)} = ${esc(fmtNum(r.x))}${vars[si].unit ? ' ' + esc(vars[si].unit) : ''}</b> ${r.exact ? '✓' : '≈ ' + esc(t('(closest value)'))}`;
+    A.sound('done');
+  };
+  $('.fc-solve-go', box).onclick = solve;
+  $('.fc-target', box).onkeydown = e => { if (e.key === 'Enter') solve(); };
+  $('.fc-copy-res', box).onclick = () => A.copyText(outEl.textContent);
   const texBtn = $('.fc-copy-tex', box);
-  if (texBtn) texBtn.onclick = () => A.copyText(d.latex || d.expressionText || '');
-  recalc();
+  if (texBtn) texBtn.onclick = () => {
+    const syms = vars.map((v, i) => `${v.symbol} = ${fmtNum(vals[i])}`).join(',\\; ');
+    A.copyText(`${d.latex || d.expressionText || ''}\\quad (${syms}) \\Rightarrow ${fmtNum(res)}${d.unit ? '\\,\\mathrm{' + d.unit + '}' : ''}`);
+  };
+  $('.fc-share', box).onclick = () => { A.copyText(fcShareUrl(d, vals)); A.toast(t('Share link copied')); };
+  $('.fc-save', box).onclick = (e) => {
+    const on = fcToggleSaved(d); const b = e.currentTarget;
+    b.classList.toggle('on', on); b.textContent = (on ? '★ ' : '☆ ') + t(on ? 'Saved' : 'Save');
+    A.sound(on ? 'saved' : 'toggleOff'); A.toast(t(on ? 'Formula saved' : 'Removed from saved'));
+  };
+  fcRemember(d);
+  recalcNow();
+  box.dataset.renderMs = (performance.now() - T0).toFixed(2);
+  if (window.ResizeObserver){ try { new ResizeObserver(() => scheduleGraph()).observe(canvas); } catch(_){} }
   return box;
 }
 
-async function generateFormulaSpec(promptText, onStatus, signal){
-  const kp = katex();
-  const sys = `You are a master scientist, engineer, mathematician, and educator.
-Given ANY formula request (mathematics, physics, engineering, finance, chemistry, electronics, statistics, cooking ratios, fitness, etc.), return ONLY valid JSON matching this exact schema:
-{
-  "title": "Formula Name (in user's language)",
-  "domain": "Math | Physics | Engineering | Finance | Chemistry | General",
-  "description": "1-2 clear sentences explaining what the formula computes and when to use it (in user's language)",
-  "latex": "LaTeX equation WITHOUT dollar signs, e.g. F = G \\\\frac{m_1 m_2}{r^2}",
-  "expressionText": "Readable formula notation, e.g. F = G * (m1 * m2) / r^2",
-  "resultLabel": "What the output represents (e.g. Gravitational Force)",
-  "unit": "Output unit string if applicable (e.g. N, $, m/s, J, rad/m, or empty string)",
-  "variables": [
-    {"symbol": "m1", "label": "Mass 1", "unit": "kg", "defaultVal": 10, "min": 0, "max": 1000, "step": 1}
-  ],
-  "jsExpression": "Pure single-expression JavaScript using ONLY the declared variable symbols and Math.* functions (no assignment, no semicolons, no LaTeX backslashes), e.g. (6.674e-11 * m1 * m2) / Math.pow(r, 2)"
+// Prefetched specs (lab input is fetched while you type, so Enter is instant).
+const fcPrefetch = new Map();
+async function fetchFormulaSpec(promptText, signal){
+  const k = String(promptText || '').trim().toLowerCase();
+  if (fcPrefetch.has(k)) return fcPrefetch.get(k);
+  const headers = {'Content-Type': 'application/json'}; const tok = localStorage.getItem('lz.authToken'); if (tok) headers['x-lz-token'] = tok;
+  const p = fetch('/api/formula/spec', {method: 'POST', headers, body: JSON.stringify({prompt: promptText}), signal})
+    .then(r => r.ok ? r.json() : null).then(j => (j && j.spec) || null).catch(() => null);
+  fcPrefetch.set(k, p); p.then(sp => { if (!sp) fcPrefetch.delete(k); });
+  if (fcPrefetch.size > 40) fcPrefetch.delete(fcPrefetch.keys().next().value);
+  return p;
 }
-RULES:
-- Every variable symbol MUST be a valid simple JS identifier ([a-zA-Z_][a-zA-Z0-9_]*) — NO subscripts with braces, NO spaces, NO Math reserved names like E or PI.
-- If the formula is a vector, gradient (like ∇φ), or derivative equation, make jsExpression compute the numerical scalar magnitude (e.g. Math.hypot(phi / (x || 1), phi / (y || 1), phi / (z || 1))) using ONLY the declared variable symbols so the calculator always outputs a live number!
-- Include realistic defaultVal, min, max, and step for every variable so the live calculator works immediately.`;
-  const spec = await LZ.chatJSON([{role:'system', content: sys}, {role:'user', content: promptText}], {
-    tier: tier(),
-    level: Math.max(1, A.state.level),
-    maxTokens: 2200,
-    signal,
-    onStatus
-  });
-  await kp;
+
+async function generateFormulaSpec(promptText, onStatus, signal){
+  // 1) Instant (no network): 110+ built-in formulas, typed formulas, cached AI results.
+  const hit = window.FormulaFast && window.FormulaFast.instant(promptText);
+  katex().catch(() => {});
+  if (hit){ if (onStatus) onStatus(t('Instant formula')); return hit; }
+  // 2) Server: fastest JSON model + shared cache (one short round-trip).
+  if (onStatus) onStatus(t('Deriving formula'));
+  let spec = await fetchFormulaSpec(promptText, signal);
+  // 3) Fallback: the general chat pipeline (previous path).
+  if (!spec){
+    spec = await LZ.chatJSON([{role:'system', content: 'Return ONLY compact JSON for an interactive formula calculator: {"title","domain","description","latex","expressionText","resultLabel","unit","variables":[{"symbol","label","unit","defaultVal","min","max","step"}],"jsExpression"}. jsExpression is one JS expression using only the variable symbols and Math.*; symbols are simple identifiers.'}, {role:'user', content: promptText}], {
+      tier: tier(), level: 0, maxTokens: 900, temperature: 0.2, signal, onStatus
+    });
+  }
+  if (spec && spec.jsExpression && Array.isArray(spec.variables) && spec.variables.length && window.FormulaFast) window.FormulaFast.cachePut(promptText, spec);
   return spec;
 }
 
+let fcSharedPending = null;
 function labFormula(body, preset){
   const ideas = [
     'Projectile horizontal range',
     'Compound interest A = P(1 + r/n)^(nt)',
     'Ohm’s Law & Electrical Power',
-    'Relativistic Lorentz factor gamma',
-    'Quadratic root (positive root)',
+    'Escape velocity',
+    'Savings with monthly deposit',
     'Ideal Gas Law pressure P = nRT/V'
   ];
+  const saved = fcLoad(FC_SAVED), recent = fcLoad(FC_RECENT);
+  const row = (label, list, cls) => list.length ? `<div class="fc-lib-row"><span class="fc-lib-lbl">${label}</span>${list.map((x, i) => `<button class="chip ${cls}" data-i="${i}" dir="auto">${esc(x.title || 'Formula')}</button>`).join('')}</div>` : '';
   body.innerHTML = `<div class="lab-grid">
-    <p class="lab-desc">${t('Describe any formula in math, physics, engineering, finance, chemistry, or everyday life — AI derives it with typeset math and builds an instant live calculator.')}</p>
-    <textarea class="lab-input" id="fcIn" rows="2" dir="auto" placeholder="${esc(t('e.g. kinetic energy, compound interest with monthly contribution, Doppler shift, BMI…'))}">${esc(preset || '')}</textarea>
+    <p class="lab-desc">${t('Describe any formula in math, physics, engineering, finance, chemistry, or everyday life — 110+ formulas open instantly, anything else is derived by AI in about a second. Graph it, solve for any variable, convert units and share it.')}</p>
+    <div class="fc-search-wrap">
+      <textarea class="lab-input" id="fcIn" rows="2" dir="auto" placeholder="${esc(t('e.g. kinetic energy, compound interest with monthly contribution, Doppler shift, BMI…'))}">${esc(preset || '')}</textarea>
+      <div class="fc-suggest" id="fcSuggest" hidden></div>
+    </div>
     <div class="lab-row">
       <button class="btn-primary" id="fcGo">🧮 ${t('Build Formula & Calculator')}</button>
       <span class="ms-ex">${ideas.map(x => `<button class="chip" data-f="${esc(x)}">${esc(x)}</button>`).join('')}</span>
     </div>
+    ${row('★ ' + esc(t('Saved')), saved.slice(0, 10), 'fc-saved')}
+    ${row('🕘 ' + esc(t('Recent')), recent.slice(0, 8), 'fc-recent')}
     <div id="fcWork"></div>
     <div id="fcOut"></div>
   </div>`;
+  const show = (spec) => { $('#fcOut').innerHTML = ''; $('#fcOut').appendChild(renderFormulaCard(spec)); A.sound('done'); };
   const runCalc = async () => {
     const q = $('#fcIn').value.trim(); if (!q) return;
+    $('#fcSuggest').hidden = true;
     $('#fcGo').disabled = true; $('#fcOut').innerHTML = ''; $('#fcWork').innerHTML = '';
+    const t0 = performance.now();
+    const instant = window.FormulaFast && window.FormulaFast.instant(q);
+    if (instant){ show(instant); $('#fcGo').disabled = false; return; }
     const w = A.Work($('#fcWork'), {open: true});
     try {
       w.log(t('Deriving formula & variables'));
       const spec = await generateFormulaSpec(q, x => w.log(x));
-      w.log(t('Building live calculator'));
+      w.log(t('Built in') + ' ' + Math.round(performance.now() - t0) + ' ms');
       w.done();
       if (!spec || !spec.jsExpression || !Array.isArray(spec.variables) || !spec.variables.length){
         throw Object.assign(new Error('Could not parse formula variables — try being slightly more specific.'), {userFacing: true});
       }
-      const card = renderFormulaCard(spec);
-      $('#fcOut').appendChild(card);
-    } catch(e){ fail(w, e, 'Could not build that formula — try rephrasing'); }
+      show(spec);
+    } catch(e){ A.sound('error'); fail(w, e, 'Could not build that formula — try rephrasing'); }
     $('#fcGo').disabled = false;
   };
-  $$('.ms-ex .chip', body).forEach(b => b.onclick = () => { $('#fcIn').value = b.dataset.f; runCalc(); });
+  // Live library search + speculative prefetch while typing.
+  let tmr = 0;
+  $('#fcIn').addEventListener('input', () => {
+    clearTimeout(tmr);
+    const q = $('#fcIn').value.trim(); const sg = $('#fcSuggest');
+    const hits = q.length >= 2 && window.FormulaFast && window.FormulaFast.search ? window.FormulaFast.search(q, 6) : [];
+    sg.hidden = !hits.length;
+    sg.innerHTML = hits.map(h => `<button type="button" data-id="${esc(h.id)}"><b>${esc(h.title)}</b><small>${esc(h.domain)} · ⚡</small></button>`).join('');
+    if (q.length >= 4 && !(window.FormulaFast && window.FormulaFast.instant(q))) tmr = setTimeout(() => fetchFormulaSpec(q), 450);
+  });
+  $('#fcSuggest').addEventListener('click', e => {
+    const b = e.target.closest('button[data-id]'); if (!b) return;
+    const sp = window.FormulaFast.byId(b.dataset.id); if (!sp) return;
+    A.sound('chip'); $('#fcSuggest').hidden = true; $('#fcIn').value = sp.title; show(sp);
+  });
+  $$('.ms-ex .chip', body).forEach(b => b.onclick = () => { $('#fcIn').value = b.dataset.f; A.sound('chip'); runCalc(); });
+  $$('.fc-saved', body).forEach(b => b.onclick = () => { A.sound('chip'); show(saved[+b.dataset.i]); });
+  $$('.fc-recent', body).forEach(b => b.onclick = () => { A.sound('chip'); show(recent[+b.dataset.i]); });
   $('#fcGo').onclick = runCalc;
   $('#fcIn').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); runCalc(); } };
+  if (fcSharedPending){ const sp = fcSharedPending; fcSharedPending = null; show(sp); return; }
   if (preset && preset.trim()) runCalc();
+}
+// Shared formula links: lokizenith.com/#formula=…
+function openSharedFormulaFromHash(){
+  const m = /^#formula=([A-Za-z0-9_-]+)/.exec(location.hash || '');
+  if (!m) return;
+  const sp = fcFromShare(m[1]);
+  try { history.replaceState(null, '', location.pathname + location.search); } catch(_){}
+  if (!sp) return;
+  fcSharedPending = sp;
+  setTimeout(() => { try { A.openLab('formula'); } catch(_){ fcSharedPending = null; } }, 300);
 }
 
 [{id:'formula', icon:'🧮', name:'Formula Calculator', desc:'Prompt any math, physics, engineering or custom formula + live calculator', both:true, isNew:true, fn: labFormula},
@@ -596,5 +802,7 @@ function labFormula(body, preset){
  {id:'docqa', icon:'📑', name:'Document Q&A', desc:'Ask a PDF — answers with highlighted quotes', isNew:true, fn: labDocQA},
  {id:'url', icon:'🔗', name:'URL Summarizer', desc:'Any link → TL;DR, key points & quotes', isNew:true, fn: labURL}
 ].forEach(A.registerLab);
-window.LabsX = {compile, katex, tex, compileFormula, renderFormulaCard, generateFormulaSpec};
+window.LabsX = {compile, katex, tex, compileFormula, renderFormulaCard, generateFormulaSpec, fcSolve, fcConversions, fcShareUrl, fcFromShare};
+openSharedFormulaFromHash();
+addEventListener('hashchange', openSharedFormulaFromHash);
 })();

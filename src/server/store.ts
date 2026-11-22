@@ -662,7 +662,7 @@ function loadStoreFromDisk(): StoreShape {
   }
 }
 
-const STORAGE_MODE = resolveStorageMode();
+let STORAGE_MODE: 'disk' | 'firestore' = resolveStorageMode();
 let durableReady = STORAGE_MODE !== 'firestore';
 let firestoreInitPromise: Promise<void> | null = null;
 let firestoreDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -1026,6 +1026,24 @@ async function initFirestoreStore(): Promise<void> {
       `[Store] Firestore ready project=${ids.projectId} database=${ids.databaseId} users=${Object.keys(store.users).length} sessions=${Object.keys(store.sessions).length}.`
     );
   } catch (err) {
+    const forcedFirestore = ['firestore', 'cloud'].includes(
+      String(process.env.LZ_STORAGE || '').trim().toLowerCase()
+    );
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const isAuthOrPermError =
+      /PERMISSION_DENIED|UNAUTHENTICATED|Could not load the default credentials|insufficient permissions/i.test(errMsg);
+
+    if (!forcedFirestore && isAuthOrPermError) {
+      await stopFirestoreWorker().catch(() => {});
+      STORAGE_MODE = 'disk';
+      adoptStore(loadStoreFromDisk());
+      durableReady = true;
+      console.warn(
+        `[Store] Server-side Firestore unavailable (${errMsg}). Falling back to durable disk + WAL storage (${Object.keys(store.users).length} accounts).`
+      );
+      return;
+    }
+
     durableReady = false;
     throw firestoreBootError(err);
   }

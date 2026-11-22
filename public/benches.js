@@ -8,7 +8,7 @@
      3. Loki Ultimate ($12.99/Month or $5.00/Month Upgrade from Pro + 3-Day Free Trial) —
         Unlimited Usage, Unlimited Images, Full LokiCode Access, Unlimited Attachments,
         Full Lokizen 4.0 Stark Access, Ultra Thinking Mode Unlocked (Turbo Speed + Extra-High),
-        AI Design Studio Unlocked, Priority Autonomous LokiBot Agents
+        AI Design Studio Unlocked
    ============================================================================ */
 (function () {
   const A = window.App || window._Loki;
@@ -160,8 +160,7 @@
           items: [
             { icon: '👑', title: 'Animated Holographic ULTIMATE Tag', sub: '100× more beautiful animated shimmer badge everywhere', badge: '✦ ULTIMATE', highlight: true },
             { icon: '🎬', title: 'Animated 4s Video Banner + Exclusive FX', sub: 'Looping silent 4s video banner + cosmic profile overlays', badge: 'Unlocked', highlight: true },
-            { icon: '🔗', title: 'Unlimited Weekly Shared Chats', sub: 'Share unlimited conversation links & copies', badge: '∞ Unlimited', highlight: true },
-            { icon: '🤖', title: 'Priority Autonomous LokiBot Agents', sub: '24/7 multi-agent rooms & full studio priority', badge: 'VIP Priority' }
+            { icon: '🔗', title: 'Unlimited Weekly Shared Chats', sub: 'Share unlimited conversation links & copies', badge: '∞ Unlimited', highlight: true }
           ]
         }
       ]

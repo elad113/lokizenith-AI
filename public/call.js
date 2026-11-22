@@ -75,8 +75,22 @@ const C = {
   rec: null, chunks: [], recMime: '',
   speaking: false, talkFrames: 0, silFrames: 0, floor: 0.008,
   abort: null, history: [], transcript: [], startedAt: 0, timerId: 0,
-  lastSpokenReply: ''
+  lastSpokenReply: '',
+  bargeFrames: 0, spokenUpTo: 0, sayQueue: [], sayBusy: false, streamDone: true, turnSeq: 0
 };
+
+/* ---- Windows app bridge: report call state to the floating bar, route speech to Computer use ---- */
+const DESK = () => window.LokizenithDesktop || null;
+function reportState(caption){
+  const d = DESK(); if (!d || !d.call) return;
+  try { d.call.setState({ active: C.open, muted: C.muted, phase: C.phase, caption: caption != null ? String(caption).slice(0, 140) : '' }); } catch(_){}
+}
+async function cuStatus(){
+  const d = DESK(); if (!d || !d.computerUse) return null;
+  try { return await d.computerUse.status(); } catch(_){ return null; }
+}
+const CU_START_RE = /^(?:(?:please|can you|could you|hey)\s+)*(?:(?:use|start)\s+computer use|computer use|take control(?: of my (?:pc|computer))?|on my (?:pc|computer)|control my (?:pc|computer))[\s,:-]*/i;
+const CU_INLINE_RE = /\b(on my (?:pc|computer|screen)|take control|control my (?:pc|computer)|computer use)\b/i;
 
 function currentVoice(){
   return VOICE_PROFILES.find(v => v.id === C.voiceId) || VOICE_PROFILES[0];
@@ -387,6 +401,7 @@ function setPhase(p, sub){
   };
   $('#callState').textContent = titles[p] || p;
   if (sub !== undefined) $('#callSub').textContent = sub;
+  reportState(p === 'speaking' ? (C.lastSpokenReply || '').slice(0, 120) : (titles[p] || p));
 }
 
 function setCaption(txt, role){
@@ -410,8 +425,11 @@ function speakAloud(text, onDone){
     return;
   }
 
-  // Pause mic track & speech recognizer while AI speaks so speaker audio never self-triggers
-  if (C.track) C.track.enabled = false;
+  // Pause the speech recognizer while AI speaks. The mic track itself stays on (echo-cancelled)
+  // so you can interrupt by just talking (barge-in); without echo cancellation it is paused.
+  const aec = C.track && C.track.getSettings && C.track.getSettings().echoCancellation;
+  if (C.track) C.track.enabled = !!aec && !C.muted;
+  C.bargeFrames = 0;
   if (C.sr) { try { C.sr.abort(); } catch(_){} C.sr = null; }
   if (C.rec && C.rec.state === 'recording') { C.chunks = []; try { C.rec.stop(); } catch(_){} }
 
@@ -499,7 +517,8 @@ async function start(){
 
 function end(){
   C.open = false;
-  cancelAnimationFrame(C.raf); clearInterval(C.timerId);
+  cancelAnimationFrame(C.raf); clearTimeout(C.bgTimer); clearInterval(C.timerId);
+  C.sayQueue = []; C.sayBusy = false; C.turnSeq++;
   if (C.abort) try { C.abort.abort(); } catch(_){}
   if (C.sr) try { C.sr.abort(); } catch(_){} C.sr = null;
   if (C.rec && C.rec.state !== 'inactive') try { C.rec.stop(); } catch(_){} C.rec = null;
@@ -509,10 +528,12 @@ function end(){
   if (C.stream) C.stream.getTracks().forEach(t => t.stop()); C.stream = null; C.track = null;
   if (C.ctx) try { C.ctx.close(); } catch(_){} C.ctx = null;
   const ov = $('#callOverlay'); if (ov){ ov.classList.remove('open'); ov.hidden = true; }
+  reportState('');
 }
 
 function toggleMute(){
   C.muted = !C.muted;
+  setTimeout(() => reportState(C.muted ? 'Muted' : ''), 0);
   if (C.track) C.track.enabled = !C.muted && C.phase !== 'speaking';
   syncMuteQuietUI();
   animateToggleBtn($('#callMuteBtn'));
@@ -571,6 +592,13 @@ function loop(){
     }
   }
 
+  // Barge-in: you start talking while Lokizenith speaks -> it stops and listens.
+  if (C.analyser && !C.muted && C.phase === 'speaking' && C.track && C.track.enabled && !C.quiet){
+    const bthr = Math.max(0.075, C.floor * 6);
+    if (rms > bthr){ if (++C.bargeFrames >= 7){ C.bargeFrames = 0; bargeIn(); } }
+    else C.bargeFrames = Math.max(0, C.bargeFrames - 1);
+  }
+
   if (C.analyser && !C.muted && C.phase !== 'speaking' && C.phase !== 'thinking'){
     if (!C.speaking) C.floor = C.floor * 0.995 + rms * 0.005;
     const thr = Math.max(0.018, C.floor * 3.0);
@@ -584,7 +612,7 @@ function loop(){
         }
       } else if (C.speaking){
         C.silFrames++;
-        if (C.silFrames >= 24){
+        if (C.silFrames >= (document.hidden ? 8 : 20)){
           C.speaking = false; C.talkFrames = 0; C.silFrames = 0;
           finishTurn();
         }
@@ -593,10 +621,14 @@ function loop(){
       }
     }
   }
-  C.raf = requestAnimationFrame(loop);
+  // requestAnimationFrame pauses when the window is minimized (e.g. while Lokizenith controls the PC),
+  // so fall back to a timer to keep listening in the background.
+  if (document.hidden) { C.raf = 0; C.bgTimer = setTimeout(loop, 50); }
+  else C.raf = requestAnimationFrame(loop);
 }
 
 function bargeIn(){
+  C.sayQueue = []; C.sayBusy = false; C.turnSeq++;
   stopSpeaking();
   if (C.abort){ try { C.abort.abort(); } catch(_){} C.abort = null; }
   setPhase('listening', t('Go ahead — listening'));
@@ -605,9 +637,9 @@ function bargeIn(){
 
 function greet(){
   const v = currentVoice();
-  const g = C.detectedLang === 'he' ? `היי! כאן ${v.name}. אפשר לדבר איתי בכל שפה ואענה מיד.`
-          : C.detectedLang === 'ar' ? `أهلاً! أنا ${v.name}. تحدث بأي لغة وسأجيبك فوراً.`
-          : `Hey! ${v.name} here. Speak to me in any language and I'll reply right away.`;
+  const g = C.detectedLang === 'he' ? `היי, כאן ${v.name}. אני מקשיב.`
+          : C.detectedLang === 'ar' ? `أهلاً، أنا ${v.name}. أنا أستمع.`
+          : `Hi, ${v.name} here. I'm listening.`;
   addTranscriptLine('assistant', g);
   speakAloud(g);
 }
@@ -706,6 +738,50 @@ async function onRecStop(){
 }
 
 /* ---- Detect language, stream reply in that exact language, and speak it at selected speed ---- */
+async function routeToComputer(userText, det){
+  const d = DESK(); if (!d || !d.computerUse) return false;
+  const st = await cuStatus();
+  const he = det.code === 'he';
+  if (st && st.running){
+    const r = await d.computerUse.say(userText).catch(() => null);
+    const reply = r && r.stopped ? (he ? 'עצרתי.' : 'Stopped.') : (he ? 'הבנתי, מוסיף את זה למשימה.' : 'Got it, I\'m adding that to the task.');
+    addTranscriptLine('assistant', reply); speakAloud(reply);
+    return true;
+  }
+  if (CU_START_RE.test(userText) || CU_INLINE_RE.test(userText)){
+    const goal = userText.replace(CU_START_RE, '').replace(/^(and|then)\s+/i, '').trim() || userText;
+    const r = await d.computerUse.start(goal, { source: 'voice' }).catch((e) => ({ ok: false, error: String(e && e.message || e) }));
+    const reply = r && r.ok === false ? (r.error || 'I could not take control.') : (he ? 'לוקיזניט לוקח שליטה עכשיו. תגיד עצור בכל רגע.' : 'Taking control now. Say stop any time.');
+    addTranscriptLine('assistant', reply); speakAloud(reply);
+    return true;
+  }
+  return false;
+}
+
+/* Speak finished sentences while the rest of the answer is still streaming (much faster first audio). */
+function pumpSay(seq){
+  if (seq !== C.turnSeq || C.sayBusy) return;
+  const next = C.sayQueue.shift();
+  if (next == null){
+    if (C.streamDone && C.open){ if (!C.muted && C.track) C.track.enabled = true; setPhase('listening', t('Your turn — just speak')); armTurn(); }
+    return;
+  }
+  C.sayBusy = true;
+  speakAloud(next, () => { C.sayBusy = false; if (seq === C.turnSeq) pumpSay(seq); });
+}
+function queueSentences(full, final, seq){
+  const text = plain(full);
+  let rest = text.slice(C.spokenUpTo);
+  const out = [];
+  for (;;){
+    const m = rest.match(/^[\s\S]*?[.!?…。؟](?=\s|$)/);
+    if (!m || (m[0].trim().length < 12 && !final)) break;
+    out.push(m[0].trim()); C.spokenUpTo += m[0].length; rest = text.slice(C.spokenUpTo);
+  }
+  if (final && rest.trim()){ out.push(rest.trim()); C.spokenUpTo = text.length; }
+  if (out.length){ C.sayQueue.push(...out); pumpSay(seq); }
+}
+
 async function respond(userText){
   if (!C.open || !userText) return;
   const det = detectSpokenLanguage(userText, C.detectedLang);
@@ -713,12 +789,14 @@ async function respond(userText){
   updateHeaderBadge();
   setCaption(userText, 'user');
   addTranscriptLine('user', userText);
+  if (await routeToComputer(userText, det)) return;
   setPhase('thinking', `${t('Thinking')} (${det.label})…`);
   C.history.push({role:'user', content: userText});
   if (C.history.length > 14) C.history.splice(0, C.history.length - 14);
 
   const ctrl = new AbortController(); C.abort = ctrl;
   let full = '';
+  const seq = ++C.turnSeq; C.spokenUpTo = 0; C.sayQueue = []; C.sayBusy = false; C.streamDone = false;
   const v = currentVoice();
   const p = currentPersona();
   const sysMsg = `You are ${v.name} (Lokizen 4.0 Stark) in a live real-time voice call with the user.
@@ -736,7 +814,8 @@ Reply in natural spoken language ONLY — 1 to 3 concise, punchy sentences, no m
         signal: ctrl.signal,
         onToken: (_d, f) => {
           full = f;
-          setCaption(plain(full).slice(-280), 'ai');
+          if (C.phase !== 'speaking') setCaption(plain(full).slice(-280), 'ai');
+          if (!C.quiet && seq === C.turnSeq) queueSentences(full, false, seq);
         }
       });
     } else {
@@ -751,9 +830,13 @@ Reply in natural spoken language ONLY — 1 to 3 concise, punchy sentences, no m
     }
     const spoken = plain(full).trim();
     C.history.push({role:'assistant', content: spoken});
-    if (spoken) {
+    C.streamDone = true;
+    if (spoken && seq === C.turnSeq) {
       addTranscriptLine('assistant', spoken);
-      speakAloud(spoken);
+      if (C.quiet) speakAloud(spoken);
+      else { queueSentences(full, true, seq); pumpSay(seq); }
+    } else if (seq !== C.turnSeq) {
+      /* interrupted */
     } else {
       setPhase('listening', t('Your turn — just speak'));
       armTurn();
@@ -763,6 +846,26 @@ Reply in natural spoken language ONLY — 1 to 3 concise, punchy sentences, no m
   } finally { C.abort = null; }
 }
 
-window.Call = {start, open: start, end, VOICE_PROFILES, detectSpokenLanguage};
+document.addEventListener('keydown', (e) => {
+  if (!C.open) return;
+  const typing = e.target && (/^(INPUT|TEXTAREA)$/.test(e.target.tagName) || e.target.isContentEditable);
+  if (e.key === 'Escape' && !typing){ e.preventDefault(); end(); }
+  else if ((e.key === 'm' || e.key === 'M') && !typing && !e.ctrlKey && !e.metaKey){ e.preventDefault(); toggleMute(); }
+  else if (e.key === ' ' && !typing && (C.phase === 'speaking' || C.phase === 'thinking')){ e.preventDefault(); bargeIn(); }
+});
+if (DESK() && DESK().computerUse && DESK().computerUse.onEvent){
+  DESK().computerUse.onEvent((ev) => {
+    if (!C.open || !ev) return;
+    if (ev.kind === 'done' || ev.kind === 'stopped'){
+      const msg = String(ev.text || (ev.ok ? 'Done.' : 'Stopped.')).slice(0, 300);
+      addTranscriptLine('assistant', msg);
+      if (C.phase !== 'speaking') speakAloud(msg);
+    } else if (ev.kind === 'say' && ev.text && C.phase === 'listening'){
+      setCaption(ev.text, 'ai');
+    }
+  });
+}
+
+window.Call = {start, open: start, end, toggleMute, isOpen: () => C.open, VOICE_PROFILES, detectSpokenLanguage};
 const btn = $('#callBtn'); if (btn) btn.onclick = start;
 })();

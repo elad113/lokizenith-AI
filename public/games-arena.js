@@ -116,21 +116,14 @@
 
   function detectPrompt(text) {
     const raw = String(text || '').trim();
-    if (!raw || raw.length > 200) return null;
+    if (!raw || raw.length > 220) return null;
     if (
-      /\b(code|script|html|css|python|javascript|typescript|react|unity|godot|tutorial|algorithm|how\s+to\s+build|create\s+a\s+website)\b|תכתוב\s+קוד|בנה\s+אפליקציה|קוד\s+למשחק|תכנת/i.test(
+      /\b(code|script|html|css|python|javascript|typescript|react|unity|godot|tutorial|algorithm|how\s+to\s+build|create\s+a\s+website|rules\s+of|history\s+of|who\s+invented|who\s+won|championship|grandmaster|rating)\b|תכתוב\s+קוד|בנה\s+אפליקציה|קוד\s+למשחק|תכנת|חוקי\s+המשחק|איך\s+מכינים|היסטוריה\s+של|מי\s+המציא|אליפות\s+העולם/i.test(
         raw,
       )
     ) {
       return null;
     }
-
-    const heTrigger =
-      /(?:תשחק|שחק|נשחק|לשחק)\s*(?:איתי|אתך|איתך|ביחד|נגדך|נגדי|משחק|שחמט|איקס|דמקה|רברסי|צוללות|ארבע|נים)|(?:בוא|בא\s*לי|רוצה|אפשר|תציע)\s*(?:נשחק|לשחק|משחק|משחקים)|^(?:משחקים|בוא\s+נשחק|תשחק\s+איתי|שחק\s+איתי)[!?.🎮♟️\s]*$/i;
-    const enTrigger =
-      /\b(?:play\s+(?:with\s+me|against\s+me|a\s+game|games|chess|tic[\s-]*tac[\s-]*toe|connect\s*(?:4|four)|checkers|reversi|othello|battleship|nim)|let'?s\s+play|wanna\s+play|want\s+to\s+play|challenge\s+you|game\s+mode|two[\s-]*player\s+games?)\b/i;
-
-    if (!heTrigger.test(raw) && !enTrigger.test(raw)) return null;
 
     let suggestedGameId = null;
     for (const item of SPECIFIC_RX) {
@@ -139,11 +132,20 @@
         break;
       }
     }
+
+    const heTrigger =
+      /(?:תשחק|שחק|נשחק|לשחק|משחקים)\s*(?:איתי|אתך|איתך|ביחד|נגדך|נגדי|משחק|במשחק|שחמט|איקס|דמקה|רברסי|צוללות|ארבע|נים|משהו)?|(?:בוא|בא\s*לי|רוצה|אפשר|תציע|תפתח|תפעיל|תביא|תשים|תן\s*לי|שים\s*לי|פתח\s*לי|נעשה)\s*(?:לנו\s*)?(?:נשחק|לשחק|איזה\s*)?(?:משחק|משחקים|שחמט|דמקה|רברסי|צוללות|איקס|ארבע\s+בשורה|נים)|משחק\s+(?:נגדך|איתך|לשניים|כיף|מהיר|חדש|אסטרטגיה|קצר)|^(?:משחק|משחקים|בוא\s+נשחק|תשחק\s+איתי|שחק\s+איתי|שחמט|דמקה|רברסי|אותלו|צוללות|איקס[\s-]*עיגול|ארבע\s+בשורה|4\s+בשורה|נים)[!?.🎮♟️🎲\s]*$/i;
+    const enTrigger =
+      /\b(?:play\s+(?:with\s+me|against\s+me|a\s+game|some\s+games?|games|chess|tic[\s-]*tac[\s-]*toe|connect\s*(?:4|four)|checkers|draughts|reversi|othello|battleships?|nim)|let'?s\s+play|wanna\s+play|want\s+to\s+play|open\s+(?:a\s+)?games?|start\s+(?:a\s+)?games?|launch\s+(?:a\s+)?games?|give\s+me\s+a\s+game|challenge\s+you|game\s+mode|game\s+arena|two[\s-]*player\s+games?)\b|^(?:games?|play|chess|checkers|reversi|othello|battleship|tic[\s-]*tac[\s-]*toe|connect\s*(?:4|four)|nim)[!?.🎮♟️🎲\s]*$/i;
+
+    const isDirectNamedShort = suggestedGameId && raw.length <= 48 && !/\?|מה\s+זה|what\s+is|explain|הסבר/i.test(raw);
+    if (!heTrigger.test(raw) && !enTrigger.test(raw) && !isDirectNamedShort) return null;
+
     const lang = isHebText(raw) ? 'he' : 'en';
     const reply =
       lang === 'he'
-        ? 'יאללה, אני לגמרי בעניין! בחר אחד מ-7 המשחקים לשניים נגדי למטה — ברגע שתלחץ ייפתח לך לוח משחק צף אינטראקטיבי עם הערות וצ׳אט חי בינינו:'
-        : 'I’m in! Pick any of the 7 two-player games against me below — clicking launches an interactive floating game board with live AI commentary and in-game chat:';
+        ? 'יאללה, אני לגמרי בעניין! בחר אחד מ-7 המשחקים לשניים נגדי למטה — ברגע שתלחץ ייפתח לך לוח משחק צף צבעוני עם טיימר, בחירת צבע וצ׳אט חי אמיתי בינינו:'
+        : 'I’m in! Pick any of the 7 two-player games against me below — clicking launches a rich interactive game board with live AI conversation:';
 
     return { lang, reply, suggestedGameId };
   }
@@ -215,7 +217,7 @@
       <div class="lz-gc-grid">
         ${GAMES.map(
           (g, idx) => `
-          <button type="button" class="lz-gc-item" data-game-id="${g.id}" style="animation-delay:${idx * 40}ms">
+          <button type="button" class="lz-gc-item" data-game-id="${g.id}" data-game="${g.id}" style="animation-delay:${idx * 40}ms">
             <span class="lz-gc-item-ic" aria-hidden="true">${g.svg}</span>
             <span class="lz-gc-item-body">
               <span class="lz-gc-item-top">
@@ -250,13 +252,87 @@
   };
   const CHESS_NAME_HE = { p: 'חייל', n: 'פרש', b: 'רץ', r: 'צריח', q: 'מלכה', k: 'מלך' };
   const CHESS_NAME_EN = { p: 'Pawn', n: 'Knight', b: 'Bishop', r: 'Rook', q: 'Queen', k: 'King' };
-  const CHESS_VAL = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+  const CHESS_VAL = { p: 100, n: 320, b: 335, r: 500, q: 900, k: 20000 };
+  const PST_P = [
+    [0,0,0,0,0,0,0,0],[50,50,50,50,50,50,50,50],[12,12,20,32,32,20,12,12],[6,6,12,27,27,12,6,6],
+    [0,0,4,24,24,4,0,0],[5,-4,-8,2,2,-8,-4,5],[5,10,10,-20,-20,10,10,5],[0,0,0,0,0,0,0,0],
+  ];
+  const PST_N = [
+    [-50,-40,-30,-30,-30,-30,-40,-50],[-40,-20,0,4,4,0,-20,-40],[-30,4,14,18,18,14,4,-30],[-30,6,18,24,24,18,6,-30],
+    [-30,4,16,22,22,16,4,-30],[-30,6,12,16,16,12,6,-30],[-40,-20,0,6,6,0,-20,-40],[-50,-40,-30,-30,-30,-30,-40,-50],
+  ];
+  const PST_B = [
+    [-20,-10,-10,-10,-10,-10,-10,-20],[-10,4,0,0,0,0,4,-10],[-10,8,8,12,12,8,8,-10],[-10,4,12,14,14,12,4,-10],
+    [-10,6,8,14,14,8,6,-10],[-10,10,10,10,10,10,10,-10],[-10,6,0,0,0,0,6,-10],[-20,-10,-10,-10,-10,-10,-10,-20],
+  ];
+  const PST_R = [
+    [0,0,2,6,6,2,0,0],[8,12,12,12,12,12,12,8],[-4,0,0,0,0,0,0,-4],[-4,0,0,0,0,0,0,-4],
+    [-4,0,0,0,0,0,0,-4],[-4,0,0,0,0,0,0,-4],[-4,0,0,0,0,0,0,-4],[0,0,4,10,10,4,0,0],
+  ];
+  const PST_Q = [
+    [-20,-10,-10,-5,-5,-10,-10,-20],[-10,0,0,0,0,0,0,-10],[-10,0,6,6,6,6,0,-10],[-5,0,6,8,8,6,0,-5],
+    [0,0,6,8,8,6,0,-5],[-10,4,6,6,6,6,0,-10],[-10,0,4,0,0,0,0,-10],[-20,-10,-10,-5,-5,-10,-10,-20],
+  ];
+  const PST_KM = [
+    [-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],
+    [-20,-30,-30,-40,-40,-30,-30,-20],[-10,-20,-20,-20,-20,-20,-20,-10],[18,22,0,0,0,0,22,18],[22,32,12,0,0,12,32,22],
+  ];
+  const PST_KE = [
+    [-40,-25,-20,-15,-15,-20,-25,-40],[-25,-10,0,4,4,0,-10,-25],[-20,0,14,20,20,14,0,-20],[-15,4,20,28,28,20,4,-15],
+    [-15,4,20,28,28,20,4,-15],[-20,0,14,20,20,14,0,-20],[-25,-10,0,4,4,0,-10,-25],[-40,-25,-20,-15,-15,-20,-25,-40],
+  ];
+  const PASSED_PAWN_BONUS = [0, 14, 24, 42, 74, 118, 178, 0];
+  const CHESS_BOOK = {
+    'w:rnbqkbnr/pppppppp/......../......../......../......../PPPPPPPP/RNBQKBNR': ['e2e4', 'd2d4', 'g1f3', 'c2c4'],
+    'b:rnbqkbnr/pppppppp/......../......../....P.../......../PPPP.PPP/RNBQKBNR': ['c7c5', 'e7e5', 'c7c6', 'e7e6'],
+    'b:rnbqkbnr/pppppppp/......../......../...P..../......../PPP.PPPP/RNBQKBNR': ['g8f6', 'd7d5', 'e7e6'],
+    'b:rnbqkbnr/pppppppp/......../......../..P...../......../PP.PPPPP/RNBQKBNR': ['e7e5', 'g8f6', 'c7c5'],
+    'b:rnbqkbnr/pppppppp/......../......../......../.....N../PPPPPPPP/RNBQKB.R': ['d7d5', 'g8f6', 'c7c5'],
+    'w:rnbqkbnr/pppp.ppp/......../....p.../....P.../......../PPPP.PPP/RNBQKBNR': ['g1f3', 'f1c4'],
+    'b:rnbqkbnr/pppp.ppp/......../....p.../....P.../.....N../PPPP.PPP/RNBQKB.R': ['b8c6', 'g8f6'],
+    'w:r.bqkbnr/pppp.ppp/..n...../....p.../....P.../.....N../PPPP.PPP/RNBQKB.R': ['f1b5', 'f1c4', 'd2d4'],
+    'b:r.bqkbnr/pppp.ppp/..n...../.B..p.../....P.../.....N../PPPP.PPP/RNBQK..R': ['a7a6', 'g8f6'],
+    'b:r.bqkbnr/pppp.ppp/..n...../....p.../..B.P.../.....N../PPPP.PPP/RNBQK..R': ['g8f6', 'f8c5'],
+    'b:rnbqkbnr/pppp.ppp/......../....p.../..B.P.../......../PPPP.PPP/RNBQK.NR': ['g8f6', 'b8c6'],
+    'b:rnbqkbnr/pppp.ppp/......../....p..Q/....P.../......../PPPP.PPP/RNB.KBNR': ['b8c6'],
+    'w:rnbqkbnr/pp.ppppp/......../..p...../....P.../......../PPPP.PPP/RNBQKBNR': ['g1f3', 'b1c3'],
+    'b:rnbqkbnr/pp.ppppp/......../..p...../....P.../.....N../PPPP.PPP/RNBQKB.R': ['d7d6', 'b8c6', 'e7e6'],
+    'w:rnbqkbnr/pp..pppp/...p..../..p...../....P.../.....N../PPPP.PPP/RNBQKB.R': ['d2d4'],
+    'w:r.bqkbnr/pp.ppppp/..n...../..p...../....P.../.....N../PPPP.PPP/RNBQKB.R': ['d2d4', 'f1b5'],
+    'w:rnbqkbnr/pppp.ppp/....p.../......../....P.../......../PPPP.PPP/RNBQKBNR': ['d2d4'],
+    'b:rnbqkbnr/pppp.ppp/....p.../......../...PP.../......../PPP..PPP/RNBQKBNR': ['d7d5'],
+    'w:rnbqkbnr/pp.ppppp/..p...../......../....P.../......../PPPP.PPP/RNBQKBNR': ['d2d4'],
+    'b:rnbqkbnr/pp.ppppp/..p...../......../...PP.../......../PPP..PPP/RNBQKBNR': ['d7d5'],
+    'w:rnbqkbnr/ppp.pppp/......../...p..../...P..../......../PPP.PPPP/RNBQKBNR': ['c2c4', 'g1f3', 'c1f4'],
+    'b:rnbqkbnr/ppp.pppp/......../...p..../..PP..../......../PP..PPPP/RNBQKBNR': ['e7e6', 'c7c6'],
+    'w:rnbqkb.r/pppppppp/.....n../......../...P..../......../PPP.PPPP/RNBQKBNR': ['c2c4', 'g1f3', 'c1f4'],
+    'b:rnbqkb.r/pppppppp/.....n../......../..PP..../......../PP..PPPP/RNBQKBNR': ['e7e6', 'g7g6'],
+  };
 
   function in8(r, c) { return r >= 0 && r < 8 && c >= 0 && c < 8; }
   function pCol(p) { return !p ? null : (p === p.toUpperCase() ? 'w' : 'b'); }
   function sqName(rc) { return 'abcdefgh'[rc[1]] + (8 - rc[0]); }
+  function formatClock(ms) {
+    const cl = Math.max(0, Math.floor(ms));
+    if (cl < 10000) return '0:' + String(Math.floor(cl / 1000)).padStart(2, '0') + '.' + Math.floor((cl % 1000) / 100);
+    const s = Math.ceil(cl / 1000);
+    return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  }
+  function formatAlgebraic(piece, mv, afterBoard, oppCol) {
+    if (mv.castleSide === 'K') return 'O-O';
+    if (mv.castleSide === 'Q') return 'O-O-O';
+    const t = piece.toLowerCase();
+    const prefix = t === 'p' ? (mv.capture ? 'abcdefgh'[mv.from[1]] : '') : t.toUpperCase();
+    const cap = mv.capture ? 'x' : '';
+    const promo = mv.promotion ? '=Q' : '';
+    const chk = inCheck(afterBoard, oppCol) ? '+' : '';
+    return prefix + cap + sqName(mv.to) + promo + chk;
+  }
 
-  function initChess() {
+  function initChess(playerSide, timerSec) {
+    const pSide = playerSide === 'b' ? 'b' : 'w';
+    const tSec = Number.isFinite(timerSec) ? timerSec : (session && session.chessTimerSec) || 0;
+    const initMs = tSec > 0 ? tSec * 1000 : 0;
     return {
       board: [
         ['r','n','b','q','k','b','n','r'],
@@ -269,13 +345,23 @@
         ['R','N','B','Q','K','B','N','R'],
       ],
       turn: 'w',
+      playerSide: pSide,
+      aiSide: pSide === 'w' ? 'b' : 'w',
       castle: { wK: true, wQ: true, bK: true, bQ: true },
+      enPassant: null,
       selected: null,
       lastMove: null,
       capturedByPlayer: [],
       capturedByAi: [],
+      history: [],
       winner: null,
+      winReason: '',
       movesCount: 0,
+      evalCp: 0,
+      timerSec: tSec,
+      clocks: { w: initMs, b: initMs },
+      clockStarted: false,
+      lastTickAt: 0,
     };
   }
 
@@ -326,6 +412,7 @@
     const [fr, fc] = mv.from, [tr, tc] = mv.to;
     const piece = board[fr][fc];
     board[fr][fc] = '';
+    if (mv.isEnPassant) board[fr][tc] = '';
     board[tr][tc] = mv.promotion || piece;
     if (mv.castleSide === 'K') { const rw = piece === 'K' ? 7 : 0; board[rw][5] = board[rw][7]; board[rw][7] = ''; }
     if (mv.castleSide === 'Q') { const rw = piece === 'K' ? 7 : 0; board[rw][3] = board[rw][0]; board[rw][0] = ''; }
@@ -336,7 +423,8 @@
     if ((fr === 7 && fc === 0) || (tr === 7 && tc === 0)) castle.wQ = false;
     if ((fr === 0 && fc === 7) || (tr === 0 && tc === 7)) castle.bK = false;
     if ((fr === 0 && fc === 0) || (tr === 0 && tc === 0)) castle.bQ = false;
-    return { ...st, board, turn: st.turn === 'w' ? 'b' : 'w', castle };
+    const enPassant = (piece === 'P' || piece === 'p') && Math.abs(tr - fr) === 2 ? [(fr + tr) / 2, fc] : null;
+    return { ...st, board, turn: st.turn === 'w' ? 'b' : 'w', castle, enPassant };
   }
 
   function chessMoves(st, col) {
@@ -353,8 +441,15 @@
             if (r === sr && !b[r + dir * 2][c]) pseudo.push({ from: [r, c], to: [r + dir * 2, c] });
           }
           for (const dc of [-1, 1]) {
-            if (in8(r + dir, c + dc) && b[r + dir][c + dc] && pCol(b[r + dir][c + dc]) === enemy) {
-              pseudo.push({ from: [r, c], to: [r + dir, c + dc], capture: b[r + dir][c + dc], promotion: r + dir === pr ? pp : null });
+            const nr = r + dir, nc = c + dc;
+            if (!in8(nr, nc)) continue;
+            if (b[nr][nc] && pCol(b[nr][nc]) === enemy) {
+              pseudo.push({ from: [r, c], to: [nr, nc], capture: b[nr][nc], promotion: nr === pr ? pp : null });
+            } else if (st.enPassant && st.enPassant[0] === nr && st.enPassant[1] === nc) {
+              const ep = b[r][nc];
+              if (ep && pCol(ep) === enemy && ep.toLowerCase() === 'p') {
+                pseudo.push({ from: [r, c], to: [nr, nc], capture: ep, isEnPassant: true });
+              }
             }
           }
         } else if (t === 'n') {
@@ -396,42 +491,279 @@
     return pseudo.filter((mv) => !inCheck(applyChess(st, mv).board, col));
   }
 
-  function evalChess(b) {
-    let sc = 0;
+  // Grandmaster Tapered Evaluation from White's perspective (+ = White better, - = Black better)
+  function evalChessCp(b) {
+    let mg = 0, eg = 0, wB = 0, bB = 0, phase = 0, wMat = 0, bMat = 0;
+    const wPF = [0,0,0,0,0,0,0,0], bPF = [0,0,0,0,0,0,0,0];
+    let wK = null, bK = null;
     for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
       const p = b[r][c]; if (!p) continue;
-      const v = (CHESS_VAL[p.toLowerCase()] || 0) + (3.5 - Math.abs(3.5 - r) + (3.5 - Math.abs(3.5 - c))) * 6 + (p === 'p' ? r * 8 : p === 'P' ? (7 - r) * 8 : 0);
-      sc += pCol(p) === 'b' ? v : -v;
+      const isW = pCol(p) === 'w', t = p.toLowerCase();
+      if (t === 'n' || t === 'b') phase += 1;
+      else if (t === 'r') phase += 2;
+      else if (t === 'q') phase += 4;
+      if (t === 'p') { if (isW) wPF[c]++; else bPF[c]++; }
+      else if (t === 'k') { if (isW) wK = [r, c]; else bK = [r, c]; }
+      else { if (isW) wMat += CHESS_VAL[t] || 0; else bMat += CHESS_VAL[t] || 0; }
     }
-    return sc;
+    const mgP = Math.min(24, phase), egP = 24 - mgP;
+
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const p = b[r][c]; if (!p) continue;
+      const isW = pCol(p) === 'w', t = p.toLowerCase(), pr = isW ? r : 7 - r;
+      const base = CHESS_VAL[t] || 0;
+      let mP = 0, eP = 0;
+      if (t === 'p') {
+        mP = PST_P[pr][c];
+        eP = PST_P[pr][c] + (6 - pr) * 4;
+        let passed = true;
+        if (isW) {
+          for (let fc = Math.max(0, c - 1); fc <= Math.min(7, c + 1) && passed; fc++) {
+            for (let rr = r - 1; rr >= 1; rr--) if (b[rr][fc] === 'p') { passed = false; break; }
+          }
+          if (passed) { const adv = 7 - r; mP += Math.round(PASSED_PAWN_BONUS[adv] * 0.75); eP += Math.round(PASSED_PAWN_BONUS[adv] * 1.25); }
+          if (r < 7 && ((c > 0 && b[r + 1][c - 1] === 'P') || (c < 7 && b[r + 1][c + 1] === 'P'))) { mP += 10; eP += 8; }
+        } else {
+          for (let fc = Math.max(0, c - 1); fc <= Math.min(7, c + 1) && passed; fc++) {
+            for (let rr = r + 1; rr <= 6; rr++) if (b[rr][fc] === 'P') { passed = false; break; }
+          }
+          if (passed) { mP += Math.round(PASSED_PAWN_BONUS[r] * 0.75); eP += Math.round(PASSED_PAWN_BONUS[r] * 1.25); }
+          if (r > 0 && ((c > 0 && b[r - 1][c - 1] === 'p') || (c < 7 && b[r - 1][c + 1] === 'p'))) { mP += 10; eP += 8; }
+        }
+      } else if (t === 'n') { mP = PST_N[pr][c]; eP = PST_N[pr][c] - 8; }
+      else if (t === 'b') { mP = PST_B[pr][c]; eP = PST_B[pr][c] + 6; if (isW) wB++; else bB++; }
+      else if (t === 'r') {
+        mP = PST_R[pr][c]; eP = PST_R[pr][c];
+        const ownP = isW ? wPF[c] : bPF[c], oppP = isW ? bPF[c] : wPF[c];
+        if (ownP === 0 && oppP === 0) { mP += 26; eP += 18; }
+        else if (ownP === 0) { mP += 14; eP += 10; }
+        if ((isW && r === 1) || (!isW && r === 6)) { mP += 24; eP += 32; }
+      } else if (t === 'q') { mP = PST_Q[pr][c]; eP = PST_Q[pr][c]; }
+      else if (t === 'k') {
+        mP = PST_KM[pr][c]; eP = PST_KE[pr][c];
+        const sr = isW ? r - 1 : r + 1, op = isW ? 'P' : 'p';
+        if (sr >= 0 && sr < 8) {
+          let sh = 0;
+          for (let fc = Math.max(0, c - 1); fc <= Math.min(7, c + 1); fc++) if (b[sr][fc] === op) sh++;
+          mP += sh * 13;
+        }
+        if ((isW ? wPF[c] : bPF[c]) === 0) mP -= 18;
+      }
+      if (isW) { mg += base + mP; eg += base + eP; }
+      else { mg -= base + mP; eg -= base + eP; }
+    }
+
+    for (let c = 0; c < 8; c++) {
+      if (wPF[c] > 1) { const pen = (wPF[c] - 1) * 16; mg -= pen; eg -= pen; }
+      if (bPF[c] > 1) { const pen = (bPF[c] - 1) * 16; mg += pen; eg += pen; }
+      if (wPF[c] > 0 && (c === 0 || wPF[c - 1] === 0) && (c === 7 || wPF[c + 1] === 0)) { mg -= 14; eg -= 16; }
+      if (bPF[c] > 0 && (c === 0 || bPF[c - 1] === 0) && (c === 7 || bPF[c + 1] === 0)) { mg += 14; eg += 16; }
+    }
+    if (wB >= 2) { mg += 38; eg += 48; }
+    if (bB >= 2) { mg -= 38; eg -= 48; }
+
+    if (egP >= 14 && wK && bK) {
+      const diff = wMat - bMat;
+      if (Math.abs(diff) >= 250) {
+        const dk = Math.abs(wK[0] - bK[0]) + Math.abs(wK[1] - bK[1]);
+        if (diff > 0) {
+          const be = Math.max(3 - bK[0], bK[0] - 4, 3 - bK[1], bK[1] - 4);
+          eg += be * 14 + (14 - dk) * 6;
+        } else {
+          const we = Math.max(3 - wK[0], wK[0] - 4, 3 - wK[1], wK[1] - 4);
+          eg -= we * 14 + (14 - dk) * 6;
+        }
+      }
+    }
+    return Math.round((mg * mgP + eg * egP) / 24);
   }
 
-  function pickChessAi(st, diff) {
-    const moves = chessMoves(st, 'b');
+  function mvUci(mv) { return sqName(mv.from) + sqName(mv.to) + (mv.promotion ? 'q' : ''); }
+
+  function chessTTKey(st) {
+    const c = (st.castle.wK ? 'K' : '') + (st.castle.wQ ? 'Q' : '') + (st.castle.bK ? 'k' : '') + (st.castle.bQ ? 'q' : '');
+    const ep = st.enPassant ? st.enPassant[0] + '' + st.enPassant[1] : '-';
+    return st.turn + ':' + c + ':' + ep + ':' + st.board.map((r) => r.map((x) => x || '.').join('')).join('/');
+  }
+
+  function orderChessMv(b, mv, ttUci, ply, ctx) {
+    const uci = mvUci(mv);
+    if (ttUci && uci === ttUci) return 2000000;
+    let s = 0;
+    if (mv.promotion) s += 190000;
+    if (mv.capture) {
+      const a = b[mv.from[0]][mv.from[1]].toLowerCase();
+      const v = mv.capture.toLowerCase();
+      s += 100000 + (CHESS_VAL[v] || 100) * 12 - (CHESS_VAL[a] || 100);
+    } else if (ctx) {
+      const k = ctx.killers[ply];
+      if (k) {
+        if (k[0] === uci) s += 55000;
+        else if (k[1] === uci) s += 45000;
+      }
+      s += Math.min(35000, ctx.history.get(uci) || 0);
+    }
+    if (mv.castleSide) s += 900;
+    if (mv.to[0] >= 2 && mv.to[0] <= 5 && mv.to[1] >= 2 && mv.to[1] <= 5) s += 28;
+    return s;
+  }
+
+  function hasNonPawn(b, col) {
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const p = b[r][c];
+      if (!p || pCol(p) !== col) continue;
+      const t = p.toLowerCase();
+      if (t !== 'p' && t !== 'k') return true;
+    }
+    return false;
+  }
+
+  function qChess(st, a, bt, col, qd, ctx) {
+    ctx.nodes++;
+    if ((ctx.nodes & 255) === 0 && Date.now() > ctx.dl) { ctx.aborted = true; return a; }
+    const chk = inCheck(st.board, col);
+    if (!chk) {
+      const stand = (col === 'w' ? 1 : -1) * evalChessCp(st.board);
+      if (stand >= bt) return bt;
+      if (stand > a) a = stand;
+      if (qd <= 0) return a;
+      if (stand + 980 < a) return a;
+    } else if (qd <= -2) {
+      return (col === 'w' ? 1 : -1) * evalChessCp(st.board);
+    }
+    const legal = chessMoves(st, col);
+    if (!legal.length) return chk ? -88000 : 0;
+    const cands = chk ? legal : legal.filter((m) => m.capture || m.promotion);
+    cands.sort((x, y) => orderChessMv(st.board, y, '', 0, null) - orderChessMv(st.board, x, '', 0, null));
+    const opp = col === 'w' ? 'b' : 'w';
+    for (const mv of cands) {
+      const sc = -qChess(applyChess(st, mv), -bt, -a, opp, qd - 1, ctx);
+      if (ctx.aborted) return a;
+      if (sc >= bt) return bt;
+      if (sc > a) a = sc;
+    }
+    return a;
+  }
+
+  function negaChess(st, d, ply, a, bt, col, ctx, allowNull) {
+    ctx.nodes++;
+    if ((ctx.nodes & 255) === 0 && Date.now() > ctx.dl) { ctx.aborted = true; return 0; }
+    const origA = a;
+    const key = chessTTKey(st);
+    const hit = ctx.tt.get(key);
+    if (hit && hit.depth >= d) {
+      if (hit.flag === 0) return hit.score;
+      if (hit.flag === 1 && hit.score > a) a = hit.score;
+      else if (hit.flag === 2 && hit.score < bt) bt = hit.score;
+      if (a >= bt) return hit.score;
+    }
+    const chk = inCheck(st.board, col);
+    const ed = chk && ply < 10 ? d + 1 : d;
+    if (ed <= 0) return qChess(st, a, bt, col, ctx.maxQ, ctx);
+
+    const opp = col === 'w' ? 'b' : 'w';
+    if (allowNull && !chk && ed >= 3 && bt < 80000 && hasNonPawn(st.board, col)) {
+      const nSt = { board: st.board, turn: opp, castle: st.castle, enPassant: null };
+      const r = ed >= 5 ? 3 : 2;
+      const nSc = -negaChess(nSt, ed - 1 - r, ply + 1, -bt, -bt + 1, opp, ctx, false);
+      if (ctx.aborted) return 0;
+      if (nSc >= bt) return bt;
+    }
+
+    const ms = chessMoves(st, col);
+    if (!ms.length) return chk ? -90000 + ply * 10 : 0;
+    const ttUci = hit ? hit.bestUci : '';
+    ms.sort((x, y) => orderChessMv(st.board, y, ttUci, ply, ctx) - orderChessMv(st.board, x, ttUci, ply, ctx));
+
+    let best = -Infinity, bestUci = mvUci(ms[0]);
+    for (let i = 0; i < ms.length; i++) {
+      const mv = ms[i];
+      const next = applyChess(st, mv);
+      const quiet = !mv.capture && !mv.promotion;
+      let sc;
+      if (i >= 4 && ed >= 3 && !chk && quiet && !inCheck(next.board, opp)) {
+        sc = -negaChess(next, ed - 2, ply + 1, -a - 1, -a, opp, ctx, true);
+        if (!ctx.aborted && sc > a) sc = -negaChess(next, ed - 1, ply + 1, -bt, -a, opp, ctx, true);
+      } else if (i > 0) {
+        sc = -negaChess(next, ed - 1, ply + 1, -a - 1, -a, opp, ctx, true);
+        if (!ctx.aborted && sc > a && sc < bt) sc = -negaChess(next, ed - 1, ply + 1, -bt, -a, opp, ctx, true);
+      } else {
+        sc = -negaChess(next, ed - 1, ply + 1, -bt, -a, opp, ctx, true);
+      }
+      if (ctx.aborted) return 0;
+      if (sc > best) { best = sc; bestUci = mvUci(mv); }
+      if (sc > a) a = sc;
+      if (a >= bt) {
+        if (quiet) {
+          if (!ctx.killers[ply]) ctx.killers[ply] = ['', ''];
+          if (ctx.killers[ply][0] !== bestUci) { ctx.killers[ply][1] = ctx.killers[ply][0]; ctx.killers[ply][0] = bestUci; }
+          ctx.history.set(bestUci, (ctx.history.get(bestUci) || 0) + ed * ed * 16);
+        }
+        break;
+      }
+    }
+    if (ctx.tt.size > 35000) ctx.tt.clear();
+    ctx.tt.set(key, { depth: ed, score: best, flag: best <= origA ? 2 : best >= bt ? 1 : 0, bestUci });
+    return best;
+  }
+
+  function pickChessAi(st, diff, aiCol) {
+    const side = aiCol || st.aiSide || st.turn || 'b';
+    const moves = chessMoves(st, side);
     if (!moves.length) return null;
+    if (moves.length === 1) return moves[0];
     if (diff === 'easy') {
       const caps = moves.filter((m) => m.capture);
       if (caps.length && Math.random() < 0.6) return caps[Math.floor(Math.random() * caps.length)];
       return moves[Math.floor(Math.random() * moves.length)];
     }
-    const ord = moves.slice().sort((a, b) => (b.capture ? 1 : 0) - (a.capture ? 1 : 0));
-    let best = ord[0], bestV = -Infinity;
-    for (const mv of ord) {
-      const s1 = applyChess(st, mv);
-      const reps = chessMoves(s1, 'w');
-      let v;
-      if (!reps.length) v = inCheck(s1.board, 'w') ? 99999 : 0;
-      else {
-        let worst = Infinity;
-        for (const rp of reps) {
-          const s2 = applyChess(s1, rp);
-          let sc = evalChess(s2.board);
-          if (diff === 'pro' && inCheck(s2.board, 'b')) sc -= 35;
-          if (sc < worst) worst = sc;
+    const key = side + ':' + st.board.map((r) => r.map((x) => x || '.').join('')).join('/');
+    const bk = CHESS_BOOK[key];
+    if (bk && bk.length) {
+      const uci = bk[Math.floor(Math.random() * bk.length)];
+      const hit = moves.find((m) => sqName(m.from) + sqName(m.to) === uci);
+      if (hit) return hit;
+    }
+    const isPro = diff === 'pro';
+    const maxD = isPro ? 6 : 3;
+    const budget = isPro ? 440 : 150;
+    const ctx = {
+      dl: Date.now() + budget,
+      aborted: false,
+      nodes: 0,
+      tt: new Map(),
+      killers: [],
+      history: new Map(),
+      maxQ: isPro ? 6 : 4,
+    };
+    const opp = side === 'w' ? 'b' : 'w';
+    let best = moves[0], bestUci = '';
+
+    for (let depth = 1; depth <= maxD; depth++) {
+      ctx.aborted = false;
+      const ord = moves.slice().sort((a, b) => orderChessMv(st.board, b, bestUci, 0, ctx) - orderChessMv(st.board, a, bestUci, 0, ctx));
+      let iBest = ord[0], iBestV = -Infinity, alpha = -Infinity;
+      for (let i = 0; i < ord.length; i++) {
+        const mv = ord[i];
+        const next = applyChess(st, mv);
+        let v;
+        if (i === 0) {
+          v = -negaChess(next, depth - 1, 1, -Infinity, -alpha, opp, ctx, true);
+        } else {
+          v = -negaChess(next, depth - 1, 1, -alpha - 1, -alpha, opp, ctx, true);
+          if (!ctx.aborted && v > alpha) v = -negaChess(next, depth - 1, 1, -Infinity, -alpha, opp, ctx, true);
         }
-        v = worst + (diff === 'pro' && inCheck(s1.board, 'w') ? 28 : 0) + (diff === 'medium' ? (Math.random() - 0.5) * 10 : 0);
+        if (ctx.aborted) break;
+        if (!isPro && depth === maxD) v += (Math.random() - 0.5) * 6;
+        if (v > iBestV) { iBestV = v; iBest = mv; }
+        if (v > alpha) alpha = v;
       }
-      if (v > bestV) { bestV = v; best = mv; }
+      if (!ctx.aborted) {
+        best = iBest;
+        bestUci = mvUci(iBest);
+        if (iBestV >= 85000) break;
+      } else break;
+      if (Date.now() > ctx.dl - 25) break;
     }
     return best;
   }
@@ -721,13 +1053,16 @@
   let rootEl = null;
   let pillEl = null;
   let aiTimer = null;
+  let chessClockTimer = null;
 
   const session = {
     open: false,
     minimized: false,
     gameId: 'chess',
     lang: 'he',
-    difficulty: 'medium',
+    difficulty: 'pro',
+    chessSide: 'w',
+    chessTimerSec: 0,
     thinking: false,
     state: null,
     chat: [],
@@ -756,11 +1091,84 @@
     }
   }
 
+  function stopChessClock() {
+    if (chessClockTimer) {
+      clearInterval(chessClockTimer);
+      chessClockTimer = null;
+    }
+  }
+
+  function syncChessClockDom() {
+    if (!rootEl || session.gameId !== 'chess' || !session.state || !session.state.timerSec) return;
+    const st = session.state;
+    const pClockEl = rootEl.querySelector('#lzgClockPlayer');
+    const aClockEl = rootEl.querySelector('#lzgClockAi');
+    if (pClockEl) {
+      const pMs = st.clocks[st.playerSide];
+      pClockEl.textContent = formatClock(pMs);
+      pClockEl.parentElement.classList.toggle('active', !st.winner && st.turn === st.playerSide);
+      pClockEl.parentElement.classList.toggle('low', pMs > 0 && pMs <= 30000);
+    }
+    if (aClockEl) {
+      const aMs = st.clocks[st.aiSide];
+      aClockEl.textContent = formatClock(aMs);
+      aClockEl.parentElement.classList.toggle('active', !st.winner && st.turn === st.aiSide);
+      aClockEl.parentElement.classList.toggle('low', aMs > 0 && aMs <= 30000);
+    }
+  }
+
+  function startChessClockIfNeeded() {
+    stopChessClock();
+    if (session.gameId !== 'chess' || !session.state || !session.state.timerSec || session.state.winner) return;
+    const st = session.state;
+    st.clockStarted = true;
+    st.lastTickAt = Date.now();
+    chessClockTimer = setInterval(() => {
+      if (!session.open || session.minimized || session.gameId !== 'chess' || !session.state || session.state.winner) {
+        if (session.state && session.state.winner) stopChessClock();
+        return;
+      }
+      const now = Date.now();
+      const dt = Math.min(500, Math.max(0, now - (st.lastTickAt || now)));
+      st.lastTickAt = now;
+      const active = st.turn;
+      st.clocks[active] = Math.max(0, st.clocks[active] - dt);
+      syncChessClockDom();
+      if (st.clocks[active] <= 0) {
+        stopChessClock();
+        clearAiTimer();
+        session.thinking = false;
+        const isHe = session.lang === 'he';
+        if (active === st.playerSide) {
+          st.winner = st.aiSide;
+          st.winReason = 'timeout';
+          session.wins.ai++;
+          playSfx('lose');
+          addChat('ai', isHe ? '⏰ נגמר לך הזמן בשעון! ניצחון שלי על הזמן — רוצה סיבוב חוזר?' : '⏰ Flag fall — you ran out of time! Want a rematch?');
+        } else {
+          st.winner = st.playerSide;
+          st.winReason = 'timeout';
+          session.wins.player++;
+          playSfx('win');
+          addChat('ai', isHe ? '⏰ נגמר לי הזמן! ניצחון שלך על השעון — כל הכבוד!' : '⏰ I flagged on time! Victory is yours — well played!');
+        }
+        renderAll();
+      }
+    }, 120);
+  }
+
   function getBoardSummary() {
     const st = session.state;
     if (!st) return '';
     if (session.gameId === 'chess') {
-      return `Chess moves=${st.movesCount}, capturedByPlayer=${st.capturedByPlayer.length}, capturedByAi=${st.capturedByAi.length}, winner=${st.winner || 'playing'}`;
+      const sideStr = st.playerSide === 'w' ? 'Player=White, AI=Black' : 'Player=Black, AI=White';
+      const evalStr = ((st.evalCp || 0) / 100).toFixed(1);
+      const recent = (st.history || []).slice(-8).join(' ');
+      const clockStr = st.timerSec
+        ? `, clocks: Player=${formatClock(st.clocks[st.playerSide])}, AI=${formatClock(st.clocks[st.aiSide])}`
+        : '';
+      const chk = inCheck(st.board, st.turn) ? ', IN CHECK' : '';
+      return `Chess (${sideStr}), turn=${st.turn === st.playerSide ? 'Player' : 'AI'}${chk}, moves=${st.movesCount}, eval=${evalStr} (White+ / Black-), recentMoves=[${recent || 'start'}]${clockStr}, capturedByPlayer=${st.capturedByPlayer.length}, capturedByAi=${st.capturedByAi.length}, winner=${st.winner || 'playing'}`;
     }
     if (session.gameId === 'reversi') {
       let p = 0, a = 0;
@@ -774,9 +1182,10 @@
 
   function initGameState(id) {
     clearAiTimer();
+    stopChessClock();
     session.thinking = false;
     session.lastMoveDesc = '';
-    if (id === 'chess') session.state = initChess();
+    if (id === 'chess') session.state = initChess(session.chessSide, session.chessTimerSec);
     else if (id === 'tictactoe') session.state = { board: Array(9).fill(''), turn: 'X', winner: null, winLine: null };
     else if (id === 'connect4') session.state = initC4();
     else if (id === 'checkers') session.state = initCheckers();
@@ -790,22 +1199,26 @@
     const m = gameMeta(id);
     if (isHe) {
       const map = {
-        chess: '♟️ יאללה שחמט! אתה בלבן ומתחיל ראשון. תיזהר — אני לא מוותר בקלות על המלכה שלי!',
-        tictactoe: '⭕ איקס עיגול! אתה X ומתחיל. בוא נראה אם תצליח להפתיע אותי!',
-        connect4: '🟢 ארבע בשורה! הפל דיסקית לאחת העמודות — אני כבר מתכנן את המלכודת שלי.',
-        checkers: '👑 דמקה! הכלים הירוקים שלך למטה. קפוץ חכם לפני שאני מכתיר מלך!',
-        reversi: '⚫ רברסי! הנקודות המוארות מראות איפה מותר לך לשים אבן. הפינות הן הזהב!',
+        chess: session.chessSide === 'b'
+          ? '♚ יאללה שחמט! בחרת לשחק בשחור — אני פותח בלבן ראשון. תתכונן לקרב אמיתי!'
+          : '♔ יאללה שחמט! אתה בלבן ומתחיל ראשון (אפשר גם לעבור לשחור או להפעיל טיימר למעלה). בוא נראה את הפתיחה שלך!',
+        tictactoe: '✕ איקס עיגול! אתה X (קורל) ואני O (תכלת). בוא נראה אם תצליח להפתיע אותי!',
+        connect4: '🔴 ארבע בשורה! הפל דיסקית אדומה לאחת העמודות — אני משחק בזהב וכבר מתכנן מלכודת.',
+        checkers: '♛ דמקה! האבנים האדומות שלך למטה ואני בכסף-אובסידיאן. קפוץ חכם לפני שאני מכתיר מלך!',
+        reversi: '⚫ רברסי! אתה בשחור ואני בפנינה לבנה. הנקודות המוזהבות מראות איפה מותר להניח אבן — הפינות הן הזהב!',
         battleship: '🎯 צוללות! בחר משבצת ברדאר האויב כדי לירות. תנסה למצוא את הצי שלי לפני שאני מוצא את שלך!',
-        nim: '💎 נים אסטרטגי! לחץ על קריסטל כדי לקחת אותו ואת כל מה שמימינו בשורה. מי שלוקח את הקריסטל האחרון מנצח!',
+        nim: '💎 נים אסטרטגי! לחץ על קריסטל סגול כדי לקחת אותו ואת כל מה שמימינו בשורה. מי שלוקח את האחרון מנצח!',
       };
       return map[id] || `🎮 התחלנו ${m.nameHe}! תורך לשחק ראשון.`;
     }
     const mapEn = {
-      chess: '♟️ Chess is on! You play White and move first. Watch your center — I play sharp!',
-      tictactoe: '⭕ Tic-Tac-Toe! You are X. Let’s see if you can crack my defense!',
-      connect4: '🟢 Connect Four! Drop your first emerald disc — I’m already setting a trap.',
-      checkers: '👑 Checkers! You play Emerald at the bottom. Race me for the first King!',
-      reversi: '⚫ Reversi! Highlighted squares show your legal flips. Fight for the corners!',
+      chess: session.chessSide === 'b'
+        ? '♚ Chess is on! You chose Black — I will open as White. Get ready for a sharp match!'
+        : '♔ Chess is on! You play White and move first (you can switch to Black or add a chess clock above). Show me your opening!',
+      tictactoe: '✕ Tic-Tac-Toe! You are Coral X and I am Sky O. Let’s see if you can crack my defense!',
+      connect4: '🔴 Connect Four! Drop your Crimson disc — I play Gold and I’m already setting a trap.',
+      checkers: '♛ Checkers! You play Ruby Red at the bottom vs my Obsidian-Silver discs. Race me for the first King!',
+      reversi: '⚫ Reversi! You play Obsidian Black vs my Pearl White discs. Gold dots show legal flips — fight for the corners!',
       battleship: '🎯 Battleship! Tap any cell on Enemy Radar to fire. Sink my 4 ships before I sink yours!',
       nim: '💎 Strategic Nim! Click any crystal to take it and the ones after it in that row. Take the last crystal to win!',
     };
@@ -882,8 +1295,11 @@
     rootEl.querySelector('#lzgMinBtn').addEventListener('click', minimizeGame);
     rootEl.querySelector('#lzgRestartBtn').addEventListener('click', () => {
       initGameState(session.gameId);
-      addChat('ai', session.lang === 'he' ? '🔄 לוח חדש! הפעם אני משחק עוד יותר חד — תורך!' : '🔄 Fresh board! I’m playing even sharper this round — your move!');
+      addChat('ai', session.lang === 'he' ? '🔄 לוח חדש! הפעם אני משחק עוד יותר חד — בוא נצא לדרך!' : '🔄 Fresh board! I’m playing even sharper this round — let’s go!');
       renderAll();
+      if (session.gameId === 'chess' && session.state && session.state.turn === session.state.aiSide) {
+        triggerChessAiTurn();
+      }
     });
     rootEl.querySelector('#lzgMuteBtn').addEventListener('click', (e) => {
       muted = !muted;
@@ -954,8 +1370,9 @@
     session.minimized = false;
     session.chat = [];
 
-    // Reset floating window position cleanly
+    // Reset floating window position cleanly & apply per-game theme attribute
     const win = rootEl.querySelector('#lzgWindow');
+    win.setAttribute('data-game', g.id);
     win.style.position = '';
     win.style.left = '';
     win.style.top = '';
@@ -969,10 +1386,16 @@
     populateSelects();
     addChat('ai', openingBanter(g.id));
     renderAll();
+
+    // If Chess and player chose Black, AI plays White opening move immediately
+    if (g.id === 'chess' && session.state && session.state.turn === session.state.aiSide) {
+      triggerChessAiTurn();
+    }
   }
 
   function closeGame() {
     clearAiTimer();
+    stopChessClock();
     session.open = false;
     session.minimized = false;
     if (rootEl) rootEl.hidden = true;
@@ -984,6 +1407,7 @@
     if (rootEl) rootEl.hidden = true;
     const g = gameMeta(session.gameId);
     if (pillEl) {
+      pillEl.setAttribute('data-game', g.id);
       pillEl.innerHTML = `<span class="lzg-mp-dot"></span> ${session.lang === 'he' ? 'חזור למשחק: ' + g.nameHe : 'Resume: ' + g.nameEn}`;
       pillEl.hidden = false;
     }
@@ -1016,13 +1440,18 @@
   }
 
   async function sendPlayerGameChat(userText) {
+    const historySnapshot = session.chat
+      .filter((c) => !c.typing && c.text)
+      .slice(-10)
+      .map((c) => ({ who: c.who, text: c.text }));
+
     addChat('user', userText);
     const isHe = session.lang === 'he';
     const g = gameMeta(session.gameId);
 
     // Show subtle typing indicator
     const typingId = 'lzgTyping_' + Date.now();
-    session.chat.push({ who: 'ai', text: isHe ? 'מקליד...' : 'Typing...', typing: true, id: typingId });
+    session.chat.push({ who: 'ai', text: isHe ? 'חושב ועונה...' : 'Thinking...', typing: true, id: typingId });
     renderChat();
 
     try {
@@ -1033,8 +1462,11 @@
           gameId: session.gameId,
           gameTitle: isHe ? g.nameHe : g.nameEn,
           lang: session.lang,
+          difficulty: session.difficulty,
+          scoreSummary: `Player ${session.wins.player} - AI ${session.wins.ai} (Draws ${session.wins.draws})`,
           boardSummary: getBoardSummary(),
           lastMove: session.lastMoveDesc,
+          history: historySnapshot,
           userMessage: userText,
         }),
       });
@@ -1043,11 +1475,11 @@
       if (data && data.reply) {
         addChat('ai', data.reply);
       } else {
-        addChat('ai', isHe ? '😎 קלטתי אותך! בוא נראה מה תעשה בתור הבא.' : '😎 Got it! Let’s see your next move.');
+        addChat('ai', isHe ? 'אני איתך! תשאל אותי על המשחק או על כל דבר שבא לך תוך כדי.' : 'I’m right here! Ask me anything about the match or chat while we play.');
       }
     } catch (_) {
       session.chat = session.chat.filter((c) => c.id !== typingId);
-      addChat('ai', isHe ? '🔥 אחלה רוח ספורטיבית! אני מוכן למהלך הבא שלך.' : '🔥 Love the energy! Ready for your next move.');
+      addChat('ai', isHe ? 'הייתה תקלת תקשורת רגעית — נסה לשלוח שוב, אני כאן!' : 'Brief connection hiccup — send that again, I’m right here!');
     }
   }
 
@@ -1074,9 +1506,10 @@
     rootEl.querySelector('#lzgTitle').textContent = isHe ? g.nameHe : g.nameEn;
 
     const st = session.state;
+    const playerWonChess = session.gameId === 'chess' && st.winner === st.playerSide;
     let statusTxt = '';
     if (st.winner) {
-      if (st.winner === 'player' || st.winner === 'X' || st.winner === 1 || st.winner === 'w') {
+      if (playerWonChess || st.winner === 'player' || st.winner === 'X' || st.winner === 1) {
         statusTxt = isHe ? '🏆 ניצחת!' : '🏆 You Won!';
       } else if (st.winner === 'draw') {
         statusTxt = isHe ? '🤝 תיקו!' : '🤝 Draw!';
@@ -1130,22 +1563,145 @@
   /* ========================================================================
      INDIVIDUAL BOARD RENDERERS & AI TURN HANDLERS
      ======================================================================== */
-  // 1. CHESS
+  // 1. CHESS (White/Black Side Choice + Dual Chess Clocks + Eval Bar + Coordinates + Move History + Upgraded Alpha-Beta AI)
   function renderChess(stage, foot) {
     const st = session.state;
     const isHe = session.lang === 'he';
-    const legal = st.winner || st.turn !== 'w' ? [] : chessMoves(st, 'w');
+    const pSide = st.playerSide || 'w';
+    const aSide = st.aiSide || 'b';
+    const flipped = pSide === 'b';
+    const legal = st.winner || st.turn !== pSide ? [] : chessMoves(st, pSide);
     const selMoves = st.selected ? legal.filter((m) => m.from[0] === st.selected[0] && m.from[1] === st.selected[1]) : [];
     const targetMap = new Map(selMoves.map((m) => [m.to[0] + ',' + m.to[1], m]));
     const whiteInCheck = inCheck(st.board, 'w');
     const blackInCheck = inCheck(st.board, 'b');
+    const playerInCheck = pSide === 'w' ? whiteInCheck : blackInCheck;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'lzg-chess-suite';
+
+    // Top control bar: Play as White/Black + Live Switch Color + Chess Timer selector
+    const ctlBar = document.createElement('div');
+    ctlBar.className = 'lzg-chess-controls';
+    ctlBar.innerHTML = `
+      <div class="lzg-side-group">
+        <div class="lzg-side-toggle" role="group" aria-label="${isHe ? 'בחר צבע בשחמט' : 'Choose chess side'}">
+          <button type="button" class="lzg-side-btn${pSide === 'w' ? ' on' : ''}" data-side="w">♔ ${isHe ? 'לבן' : 'White'}</button>
+          <button type="button" class="lzg-side-btn${pSide === 'b' ? ' on' : ''}" data-side="b">♚ ${isHe ? 'שחור' : 'Black'}</button>
+        </div>
+        <button type="button" class="lzg-flip-btn" id="lzgChessFlipBtn" title="${isHe ? 'החלף צבע עכשיו' : 'Switch color now'}">⇄ ${isHe ? 'החלף צבע' : 'Switch Color'}</button>
+      </div>
+      <div class="lzg-timer-picker">
+        <span class="lzg-timer-lbl">⏱</span>
+        <select class="lzg-timer-select" id="lzgChessTimerSelect" aria-label="${isHe ? 'טיימר שחמט' : 'Chess timer'}">
+          <option value="0"${st.timerSec === 0 ? ' selected' : ''}>${isHe ? 'ללא טיימר' : 'No Timer'}</option>
+          <option value="180"${st.timerSec === 180 ? ' selected' : ''}>3:00 ${isHe ? 'בליץ' : 'Blitz'}</option>
+          <option value="300"${st.timerSec === 300 ? ' selected' : ''}>5:00 ${isHe ? 'בליץ' : 'Blitz'}</option>
+          <option value="600"${st.timerSec === 600 ? ' selected' : ''}>10:00 ${isHe ? 'ראפיד' : 'Rapid'}</option>
+          <option value="900"${st.timerSec === 900 ? ' selected' : ''}>15:00 ${isHe ? 'קלאסי' : 'Classic'}</option>
+        </select>
+      </div>
+    `;
+    function switchChessColorTo(chosen) {
+      if (chosen === st.playerSide && !st.winner) return;
+      clearAiTimer();
+      session.thinking = false;
+      session.chessSide = chosen;
+      if (st.winner || st.movesCount === 0) {
+        initGameState('chess');
+        addChat(
+          'ai',
+          chosen === 'b'
+            ? (isHe ? '♚ מעולה! החלפנו צדדים — אתה משחק בשחור והלוח התהפך לטובתך. אני פותח בלבן!' : '♚ Awesome! Board flipped — you play Black and I will open as White!')
+            : (isHe ? '♔ עברת לשחק בלבן! אתה פותח את המשחק ראשון.' : '♔ Switched to White! Your opening move.'),
+        );
+        renderAll();
+        if (chosen === 'b') triggerChessAiTurn();
+        return;
+      }
+      // Mid-game live side swap: keep the live board, flip orientation, swap sides & captures
+      st.playerSide = chosen;
+      st.aiSide = chosen === 'w' ? 'b' : 'w';
+      st.selected = null;
+      const tmpCap = st.capturedByPlayer;
+      st.capturedByPlayer = st.capturedByAi;
+      st.capturedByAi = tmpCap;
+      addChat(
+        'ai',
+        chosen === 'b'
+          ? (isHe ? '⇄ החלפנו צבעים באמצע המשחק! עכשיו אתה משחק בשחור ואני לוקח את הלבן.' : '⇄ Swapped colors mid-game! You now command Black and I take White.')
+          : (isHe ? '⇄ החלפנו צבעים באמצע המשחק! עכשיו אתה משחק בלבן ואני לוקח את השחור.' : '⇄ Swapped colors mid-game! You now command White and I take Black.'),
+      );
+      renderAll();
+      if (st.turn === st.aiSide) triggerChessAiTurn();
+    }
+    ctlBar.querySelectorAll('.lzg-side-btn').forEach((btn) => {
+      btn.addEventListener('click', () => switchChessColorTo(btn.getAttribute('data-side')));
+    });
+    ctlBar.querySelector('#lzgChessFlipBtn').addEventListener('click', () => {
+      switchChessColorTo(st.playerSide === 'w' ? 'b' : 'w');
+    });
+    ctlBar.querySelector('#lzgChessTimerSelect').addEventListener('change', (e) => {
+      const sec = parseInt(e.target.value, 10) || 0;
+      session.chessTimerSec = sec;
+      initGameState('chess');
+      addChat(
+        'ai',
+        sec > 0
+          ? (isHe ? `⏱️ הופעל שעון שחמט של ${Math.round(sec / 60)} דקות לכל צד! משחק חדש יצא לדרך.` : `⏱️ Chess clock set to ${Math.round(sec / 60)} min per side! New game started.`)
+          : (isHe ? '⏱️ הטיימר כובה — משחק חופשי ללא הגבלת זמן.' : '⏱️ Chess clock disabled — untimed game started.'),
+      );
+      renderAll();
+      if (session.chessSide === 'b') triggerChessAiTurn();
+    });
+    wrap.appendChild(ctlBar);
+
+    // Dual Chess Clocks bar (when timer active)
+    if (st.timerSec > 0) {
+      const clocksBar = document.createElement('div');
+      clocksBar.className = 'lzg-clocks-bar';
+      const pMs = st.clocks[pSide];
+      const aMs = st.clocks[aSide];
+      clocksBar.innerHTML = `
+        <div class="lzg-clock-box${!st.winner && st.turn === aSide ? ' active' : ''}${aMs <= 30000 ? ' low' : ''}">
+          <span class="lzg-clock-who">${aSide === 'w' ? '♔' : '♚'} AI</span>
+          <b class="lzg-clock-val" id="lzgClockAi">${formatClock(aMs)}</b>
+        </div>
+        <div class="lzg-clock-box player${!st.winner && st.turn === pSide ? ' active' : ''}${pMs <= 30000 ? ' low' : ''}">
+          <span class="lzg-clock-who">${pSide === 'w' ? '♔' : '♚'} ${isHe ? 'אתה' : 'You'}</span>
+          <b class="lzg-clock-val" id="lzgClockPlayer">${formatClock(pMs)}</b>
+        </div>
+      `;
+      wrap.appendChild(clocksBar);
+    }
+
+    // Board + Live Evaluation Advantage Bar
+    const boardRow = document.createElement('div');
+    boardRow.className = 'lzg-chess-board-row';
+    boardRow.setAttribute('dir', 'ltr');
+
+    // Eval Bar
+    const cp = st.evalCp || 0;
+    const clampedCp = Math.max(-900, Math.min(900, cp));
+    const whitePct = Math.round(50 + (clampedCp / 900) * 46);
+    const evalScoreTxt = Math.abs(cp) >= 80000 ? 'M' : (cp >= 0 ? '+' : '') + (cp / 100).toFixed(1);
+    const evalWrap = document.createElement('div');
+    evalWrap.className = 'lzg-eval-bar' + (flipped ? ' flipped' : '');
+    evalWrap.title = isHe ? `הערכת עמדה: ${evalScoreTxt}` : `Position eval: ${evalScoreTxt}`;
+    evalWrap.innerHTML = `
+      <div class="lzg-eval-white" style="height:${whitePct}%"></div>
+      <span class="lzg-eval-txt">${evalScoreTxt}</span>
+    `;
+    boardRow.appendChild(evalWrap);
 
     const grid = document.createElement('div');
     grid.className = 'lzg-chess-grid';
     grid.setAttribute('dir', 'ltr');
 
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
+    for (let vr = 0; vr < 8; vr++) {
+      for (let vc = 0; vc < 8; vc++) {
+        const r = flipped ? 7 - vr : vr;
+        const c = flipped ? 7 - vc : vc;
         const p = st.board[r][c];
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -1166,19 +1722,25 @@
           (isLast ? ' last' : '') +
           (isKingDanger ? ' check' : '');
         btn.setAttribute('aria-label', `${sqName([r, c])} ${p || 'empty'}`);
-        btn.innerHTML = p
-          ? `<span class="lzg-ch-piece ${pCol(p)}">${CHESS_GLYPHS[p]}</span>`
-          : mv
-            ? '<span class="lzg-ch-dot"></span>'
-            : '';
+
+        const rankLbl = vc === 0 ? `<span class="lzg-ch-coord rank">${8 - r}</span>` : '';
+        const fileLbl = vr === 7 ? `<span class="lzg-ch-coord file">${'abcdefgh'[c]}</span>` : '';
+        btn.innerHTML =
+          rankLbl +
+          fileLbl +
+          (p
+            ? `<span class="lzg-ch-piece ${pCol(p)}">${CHESS_GLYPHS[p]}</span>`
+            : mv
+              ? '<span class="lzg-ch-dot"></span>'
+              : '');
 
         btn.addEventListener('click', () => {
-          if (session.thinking || st.winner || st.turn !== 'w') return;
+          if (session.thinking || st.winner || st.turn !== pSide) return;
           if (mv) {
             executePlayerChessMove(mv);
             return;
           }
-          if (p && pCol(p) === 'w') {
+          if (p && pCol(p) === pSide) {
             st.selected = isSel ? null : [r, c];
             renderAll();
           } else {
@@ -1189,38 +1751,68 @@
         grid.appendChild(btn);
       }
     }
-    stage.innerHTML = '';
-    stage.appendChild(grid);
+    boardRow.appendChild(grid);
+    wrap.appendChild(boardRow);
 
-    if (whiteInCheck && !st.winner) {
+    // Move Notation History Ribbon
+    if (st.history && st.history.length) {
+      const pairs = [];
+      for (let i = 0; i < st.history.length; i += 2) {
+        pairs.push(`${Math.floor(i / 2) + 1}. ${st.history[i]}${st.history[i + 1] ? ' ' + st.history[i + 1] : ''}`);
+      }
+      const histEl = document.createElement('div');
+      histEl.className = 'lzg-move-hist';
+      histEl.setAttribute('dir', 'ltr');
+      histEl.textContent = pairs.slice(-7).join('   ');
+      wrap.appendChild(histEl);
+    }
+
+    stage.innerHTML = '';
+    stage.appendChild(wrap);
+
+    if (playerInCheck && !st.winner) {
       foot.innerHTML = `<span class="lzg-alert">${isHe ? '⚠️ שח על המלך שלך! הגן עליו.' : '⚠️ Your King is in Check!'}</span>`;
+    } else if (st.winReason === 'timeout') {
+      foot.innerHTML = `<span class="lzg-alert">${st.winner === pSide ? (isHe ? '⏰ ניצחון שלך על הזמן!' : '⏰ You won on time!') : (isHe ? '⏰ נגמר הזמן בשעון!' : '⏰ Out of time!')}</span>`;
     } else {
-      foot.innerHTML = `<span class="lzg-hint-line">${isHe ? 'אתה: לבן ♔ · לחץ על כלי כדי לראות מהלכים חוקיים' : 'You: White ♔ · Tap a piece to see legal moves'}</span>`;
+      foot.innerHTML = `<span class="lzg-hint-line">${
+        pSide === 'w'
+          ? (isHe ? 'אתה: לבן ♔ · לחץ על כלי לראות מהלכים חוקיים (כולל הצרחה והכאה דרך הילוכו)' : 'You: White ♔ · Tap a piece to see legal moves (castling & en passant supported)')
+          : (isHe ? 'אתה: שחור ♚ · הלוח מופנה אליך · לחץ על כלי שחור לשחק' : 'You: Black ♚ · Board flipped for Black · Tap a black piece to move')
+      }</span>`;
     }
   }
 
   function executePlayerChessMove(mv) {
     const st = session.state;
     const isHe = session.lang === 'he';
+    const pSide = st.playerSide || 'w';
+    const aSide = st.aiSide || 'b';
     const movedPiece = st.board[mv.from[0]][mv.from[1]];
     const next = applyChess(st, mv);
     st.board = next.board;
     st.turn = next.turn;
     st.castle = next.castle;
+    st.enPassant = next.enPassant;
     st.selected = null;
     st.lastMove = mv;
     st.movesCount++;
+    st.evalCp = evalChessCp(st.board);
     if (mv.capture) st.capturedByPlayer.push(mv.capture);
+    st.history.push(formatAlgebraic(movedPiece, mv, st.board, aSide));
+
+    if (st.timerSec > 0 && !st.clockStarted) startChessClockIfNeeded();
 
     const pName = isHe ? CHESS_NAME_HE[movedPiece.toLowerCase()] : CHESS_NAME_EN[movedPiece.toLowerCase()];
     const capName = mv.capture ? (isHe ? CHESS_NAME_HE[mv.capture.toLowerCase()] : CHESS_NAME_EN[mv.capture.toLowerCase()]) : '';
-    session.lastMoveDesc = `Player moved ${pName} ${sqName(mv.from)}->${sqName(mv.to)}${capName ? ' capturing ' + capName : ''}`;
+    session.lastMoveDesc = `Player (${pSide === 'w' ? 'White' : 'Black'}) moved ${pName} ${sqName(mv.from)}->${sqName(mv.to)}${capName ? ' capturing ' + capName : ''}`;
     playSfx(mv.capture ? 'capture' : 'move');
 
-    const aiLegal = chessMoves(st, 'b');
+    const aiLegal = chessMoves(st, aSide);
     if (!aiLegal.length) {
-      if (inCheck(st.board, 'b')) {
-        st.winner = 'w';
+      stopChessClock();
+      if (inCheck(st.board, aSide)) {
+        st.winner = pSide;
         session.wins.player++;
         playSfx('win');
         addChat('ai', isHe ? '🤯 שח-מט!! הפלת אותי לגמרי! כל הכבוד, מהלך של אלופים.' : '🤯 Checkmate!! You completely outplayed me! Well deserved victory.');
@@ -1233,21 +1825,36 @@
       return;
     }
 
-    // Immediate witty reaction to player's move if notable
-    if (inCheck(st.board, 'b')) {
+    if (inCheck(st.board, aSide)) {
       addChat('ai', isHe ? `😬 אווץ׳! שח על המלך שלי עם ה${pName} ב-${sqName(mv.to)}! רגע, אני מחלץ אותו...` : `😬 Ouch! Check with your ${pName} on ${sqName(mv.to)}! Let me get out of this...`);
     } else if (mv.capture) {
       addChat('ai', isHe ? `😤 אכלת לי את ה${capName} ב-${sqName(mv.to)}?! חכה תראה את התגובה שלי...` : `😤 You took my ${capName} on ${sqName(mv.to)}?! Watch my counterattack...`);
     }
 
+    triggerChessAiTurn(pName, sqName(mv.to));
+  }
+
+  function triggerChessAiTurn(lastPlayerPieceName, lastPlayerSq) {
+    const st = session.state;
+    const isHe = session.lang === 'he';
+    const pSide = st.playerSide || 'w';
+    const aSide = st.aiSide || 'b';
+
+    if (st.timerSec > 0 && !st.clockStarted) startChessClockIfNeeded();
+
     session.thinking = true;
     renderAll();
 
     aiTimer = setTimeout(() => {
-      const aiMv = pickChessAi(st, session.difficulty);
+      if (!session.open || session.gameId !== 'chess' || !session.state || session.state.winner) {
+        session.thinking = false;
+        return;
+      }
+      const aiMv = pickChessAi(st, session.difficulty, aSide);
       session.thinking = false;
       if (!aiMv) {
-        st.winner = 'w';
+        stopChessClock();
+        st.winner = pSide;
         renderAll();
         return;
       }
@@ -1256,19 +1863,23 @@
       st.board = afterAi.board;
       st.turn = afterAi.turn;
       st.castle = afterAi.castle;
+      st.enPassant = afterAi.enPassant;
       st.lastMove = aiMv;
       st.movesCount++;
+      st.evalCp = evalChessCp(st.board);
       if (aiMv.capture) st.capturedByAi.push(aiMv.capture);
+      st.history.push(formatAlgebraic(aiP, aiMv, st.board, pSide));
 
       const aiPName = isHe ? CHESS_NAME_HE[aiP.toLowerCase()] : CHESS_NAME_EN[aiP.toLowerCase()];
       const aiCapName = aiMv.capture ? (isHe ? CHESS_NAME_HE[aiMv.capture.toLowerCase()] : CHESS_NAME_EN[aiMv.capture.toLowerCase()]) : '';
-      session.lastMoveDesc = `AI moved ${aiPName} ${sqName(aiMv.from)}->${sqName(aiMv.to)}`;
+      session.lastMoveDesc = `AI (${aSide === 'w' ? 'White' : 'Black'}) moved ${aiPName} ${sqName(aiMv.from)}->${sqName(aiMv.to)}`;
       playSfx(aiMv.capture ? 'capture' : 'ai');
 
-      const pLegal = chessMoves(st, 'w');
+      const pLegal = chessMoves(st, pSide);
       if (!pLegal.length) {
-        if (inCheck(st.board, 'w')) {
-          st.winner = 'b';
+        stopChessClock();
+        if (inCheck(st.board, pSide)) {
+          st.winner = aSide;
           session.wins.ai++;
           playSfx('lose');
           addChat('ai', isHe ? `🏆 שח-מט! ה${aiPName} שלי ב-${sqName(aiMv.to)} סגר את המשחק! רוצה סיבוב נקמה?` : `🏆 Checkmate! My ${aiPName} on ${sqName(aiMv.to)} sealed it! Want a rematch?`);
@@ -1277,25 +1888,27 @@
           session.wins.draws++;
           addChat('ai', isHe ? '🤝 תיקו (פט)! אין לך מהלך חוקי — קרב נהדר!' : '🤝 Stalemate! Great fight!');
         }
-      } else if (inCheck(st.board, 'w')) {
+      } else if (inCheck(st.board, pSide)) {
         addChat('ai', isHe ? `⚡ שח! העברתי את ה${aiPName} ל-${sqName(aiMv.to)} — המלך שלך בסכנה!` : `⚡ Check! My ${aiPName} jumps to ${sqName(aiMv.to)} — protect your King!`);
       } else if (aiMv.capture) {
         addChat('ai', isHe ? `😎 לקחתי לך את ה${aiCapName} ב-${sqName(aiMv.to)} עם ה${aiPName} שלי! מה התשובה שלך?` : `😎 Snagged your ${aiCapName} on ${sqName(aiMv.to)} with my ${aiPName}! Your move.`);
+      } else if (st.movesCount === 1) {
+        addChat('ai', isHe ? `♔ פתחתי עם ${aiPName} ל-${sqName(aiMv.to)}! תורך בשחור.` : `♔ Opened with ${aiPName} to ${sqName(aiMv.to)}! Your move as Black.`);
       } else if (st.movesCount % 2 === 0) {
         const linesHe = [
-          `🧠 שיחקתי ${aiPName} ל-${sqName(aiMv.to)} — מפתח עמדה חזקה. תורך!`,
-          `👀 ראיתי את ה${pName} שלך ב-${sqName(mv.to)}, אז הגבתי עם ${aiPName} ל-${sqName(aiMv.to)}.`,
+          `🧠 שיחקתי ${aiPName} ל-${sqName(aiMv.to)} — תופס שליטה במרכז. תורך!`,
+          lastPlayerPieceName ? `👀 קראתי את ה${lastPlayerPieceName} שלך ב-${lastPlayerSq}, אז הגבתי עם ${aiPName} ל-${sqName(aiMv.to)}.` : `✨ פיתוח מדויק: ${aiPName} ל-${sqName(aiMv.to)}.`,
           `✨ מהלך מחושב: ${aiPName} ל-${sqName(aiMv.to)}. נראה אם תקרא את התוכנית שלי!`,
         ];
         const linesEn = [
-          `🧠 Played ${aiPName} to ${sqName(aiMv.to)} — building pressure. Your turn!`,
-          `👀 Spotted your ${pName} on ${sqName(mv.to)}, so I countered with ${aiPName} to ${sqName(aiMv.to)}.`,
-          `✨ Solid development: ${aiPName} to ${sqName(aiMv.to)}. Let’s see how you respond!`,
+          `🧠 Played ${aiPName} to ${sqName(aiMv.to)} — seizing central pressure. Your turn!`,
+          lastPlayerPieceName ? `👀 Spotted your ${lastPlayerPieceName} on ${lastPlayerSq}, so I countered with ${aiPName} to ${sqName(aiMv.to)}.` : `✨ Sharp development: ${aiPName} to ${sqName(aiMv.to)}.`,
+          `✨ Solid plan: ${aiPName} to ${sqName(aiMv.to)}. Let’s see how you respond!`,
         ];
         addChat('ai', pickRand(isHe ? linesHe : linesEn));
       }
       renderAll();
-    }, 520);
+    }, 460);
   }
 
   // 2. TIC-TAC-TOE
@@ -1366,7 +1979,7 @@
     });
     stage.innerHTML = '';
     stage.appendChild(grid);
-    foot.innerHTML = `<span class="lzg-hint-line">${isHe ? 'אתה: X (ירוק) · ה-AI: O (תכלת)' : 'You: X (Emerald) · AI: O (Cyan)'}</span>`;
+    foot.innerHTML = `<span class="lzg-hint-line">${isHe ? 'אתה: X (קורל) · ה-AI: O (תכלת)' : 'You: X (Coral) · AI: O (Sky)'}</span>`;
   }
 
   // 3. CONNECT FOUR
@@ -1454,7 +2067,7 @@
     }
     stage.innerHTML = '';
     stage.appendChild(wrap);
-    foot.innerHTML = `<span class="lzg-hint-line">${isHe ? 'לחץ על עמודה להפלת דיסקית ירוקה · ה-AI משחק בתכלת' : 'Tap any column to drop your emerald disc · AI plays cyan'}</span>`;
+    foot.innerHTML = `<span class="lzg-hint-line">${isHe ? 'לחץ על עמודה להפלת דיסקית אדומה · ה-AI משחק בזהב' : 'Tap any column to drop your Crimson disc · AI plays Gold'}</span>`;
   }
 
   // 4. CHECKERS
@@ -1537,7 +2150,7 @@
     stage.innerHTML = '';
     stage.appendChild(grid);
     const mustCap = legal.some((m) => m.captured);
-    foot.innerHTML = `<span class="lzg-hint-line">${mustCap ? (isHe ? '⚡ יש לך אכילת חובה!' : '⚡ Forced capture available!') : (isHe ? 'אתה: ירוק · לחץ על כלי ואז על היעד' : 'You: Emerald · Tap a checker then a target')}</span>`;
+    foot.innerHTML = `<span class="lzg-hint-line">${mustCap ? (isHe ? '⚡ יש לך אכילת חובה!' : '⚡ Forced capture available!') : (isHe ? 'אתה: אדום רובי · ה-AI: אובסידיאן-כסף · לחץ על כלי ואז על היעד' : 'You: Ruby Red · AI: Obsidian-Silver · Tap a checker then a target')}</span>`;
   }
 
   // 5. REVERSI
@@ -1574,7 +2187,7 @@
     }
     stage.innerHTML = '';
     stage.appendChild(grid);
-    foot.innerHTML = `<span class="lzg-hint-line">${isHe ? 'אתה: ירוק · לחץ על נקודה ירוקה כדי להפוך את אבני ה-AI' : 'You: Emerald · Tap any green dot to flip AI discs'}</span>`;
+    foot.innerHTML = `<span class="lzg-hint-line">${isHe ? 'אתה: שחור אובסידיאן · ה-AI: פנינה לבנה · לחץ על נקודה מוזהבת להפוך אבנים' : 'You: Obsidian Black · AI: Pearl White · Tap any gold dot to flip discs'}</span>`;
   }
 
   function finishReversi() {

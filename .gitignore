@@ -8,3 +8,8 @@ coverage/
 !.env.example
 .lz-data/
 store-export.json
+.playwright-cli/
+.aistudio/
+.lokizen-api-keys.json
+bun.lock
+

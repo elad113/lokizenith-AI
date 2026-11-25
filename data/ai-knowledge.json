@@ -1,5 +1,427 @@
 [
   {
+    "id": "kn_97b5b510a6aa",
+    "topic": "תלמד אותי בקצרה",
+    "fact": "אליהו נביא נלחם בבצורת ובפולחן האלילים בממלכת יהודה (מלכים א׳ פרק י\"ז). הבצורה: אחרי חטא אחאב והשתחוותו לבעל, אליהו ניבא על שלוש‑עשר שנים של בצורת (פסוק 1‑2).",
+    "tags": [
+      "תלמד",
+      "אותי",
+      "בקצרה",
+      "בתנך",
+      "מלכים",
+      "פרק",
+      "אליהו",
+      "הנביא"
+    ],
+    "lang": "he",
+    "sourceUser": "Community",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795460743454,
+    "updatedAt": 1795460743454
+  },
+  {
+    "id": "kn_e4efcc9b1aff",
+    "topic": "חלבון",
+    "fact": "חלבון (פרוטאין) הוא אחד מארבעת המולקולות הביו אורגניות המרכזיות בגוף, המורכב משרשראות של חומצות אמינו, ומבצע כמעט כל פעילות ביולוגית בתא – משינוע חמצן ועד בניית שרירים, תגובות חיסוניות וקטליזת תגובות כימיות. חלבון הוא פולימר (שרשרת ארוכה) של חומצות אמינו – 20 סוגים שונים המחוברים ביניהם בקשרים פפטידיים.",
+    "tags": [
+      "חלבון",
+      "תסביר",
+      "פרוטאין",
+      "אחד",
+      "מארבעת",
+      "המולקולות",
+      "הביו",
+      "אורגניות"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795460510701,
+    "updatedAt": 1795460510701
+  },
+  {
+    "id": "kn_2e7cd5a13cd2",
+    "topic": "מתי הוקמה מדינת ישראל",
+    "fact": "מדינת ישראל הוקמה ב‑14 מאי 1948 (י״ז באייר ה׳תש״פ), היום שמצוין בישראל כיום העצמאות. רקע היסטורי – איך הגיעו להכרזה שלב תאריך מה קרה החלטת האו\"ם 29 נובמבר 1947 האו\"ם אישר את תוכנית החלוקה (הצעת 181) שהציעה מדינה יהודית ומדינה ערבית באותה ארץ.",
+    "tags": [
+      "הוקמה",
+      "מדינת",
+      "ישראל",
+      "מאי",
+      "1948",
+      "י״ז",
+      "באייר",
+      "ה׳תש״פ"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795460489691,
+    "updatedAt": 1795460489691
+  },
+  {
+    "id": "kn_12db8e82c338",
+    "topic": "מתי הוקמה מדינת ישראל",
+    "fact": "14 במאי 1948 – דוד בן גוריון הכריז על הקמת המדינה בטקס במוזיאון תל אביב, יום לפני סיום המנדט הבריטי.",
+    "tags": [
+      "הוקמה",
+      "מדינת",
+      "ישראל",
+      "במאי",
+      "1948",
+      "דוד",
+      "גוריון",
+      "הכריז"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795460478956,
+    "updatedAt": 1795460478956
+  },
+  {
+    "id": "kn_6b055a1898aa",
+    "topic": "מתי הוקמה מדינת ישראל",
+    "fact": "מדינת ישראל הוקמה ב‑14 מאי 1948 (היום הוא י״ז באייר ה׳תש״פ).",
+    "tags": [
+      "הוקמה",
+      "מדינת",
+      "ישראל",
+      "מאי",
+      "1948",
+      "היום",
+      "י״ז",
+      "באייר"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795460471127,
+    "updatedAt": 1795460471127
+  },
+  {
+    "id": "kn_13c719bbeacd",
+    "topic": "מתי הוקמה מדינת ישראל",
+    "fact": "מדינת ישראל הוקמה ב‑14 מאי 1948 (היום הוא ה‑14 במאי 1948 לפי הלוח הגרגוריאני, והוא מצוין בישראל כיום כיום יום העצמאות). למה התאריך חשוב הכרזה רשמית : דוד בן‑גוריון, ראש הממשלה הראשון, הכריז על הקמת המדינה בטקס בטל אביב, ובכך ייסד את המדינה על פי החלטת האו\"ם (תוכנית החלוקה של 1947).",
+    "tags": [
+      "הוקמה",
+      "מדינת",
+      "ישראל",
+      "מאי",
+      "1948",
+      "היום",
+      "במאי",
+      "לפי"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795460462384,
+    "updatedAt": 1795460462384
+  },
+  {
+    "id": "kn_28cd9476eeb5",
+    "topic": "תעשה על זה מבחן 12 שאלות",
+    "fact": "ענו על כל השאלות ולחצו על ✓ סיום ובדיקת המבחן בסוף כדי לקבל בדיקה מלאה וציון!",
+    "tags": [
+      "תעשה",
+      "מבחן",
+      "שאלות",
+      "ענו",
+      "השאלות",
+      "ולחצו",
+      "סיום",
+      "ובדיקת",
+      "מלחמת",
+      "העולם"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.8800000000000001,
+    "uses": 1,
+    "createdAt": 1795460084009,
+    "updatedAt": 1795460747094
+  },
+  {
+    "id": "kn_96689df0ca76",
+    "topic": "Translate last answer",
+    "fact": "Study Guide for the Bible Exam – 2 Kings (Chapters 17–19, 21, 24–25) 1. Multiple Choice Questions (Choose the correct answer) 1.",
+    "tags": [
+      "translate",
+      "last",
+      "answer",
+      "clearly",
+      "natural",
+      "english",
+      "study",
+      "guide"
+    ],
+    "lang": "en",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795460057522,
+    "updatedAt": 1795460057522
+  },
+  {
+    "id": "kn_7d012c13ebf0",
+    "topic": "test Solar System",
+    "fact": "Answer all questions and click ✓ Finish & Check Answers at the end to get your full score and AI feedback!",
+    "tags": [
+      "test",
+      "solar",
+      "system",
+      "questions",
+      "including",
+      "option",
+      "open",
+      "answer"
+    ],
+    "lang": "en",
+    "sourceUser": "Community",
+    "confidence": 0.8600000000000001,
+    "uses": 4,
+    "createdAt": 1795459165466,
+    "updatedAt": 1795459583915
+  },
+  {
+    "id": "kn_4abb3ad4cf80",
+    "topic": "בצורה מסודרת ההבדל",
+    "fact": "REST ו‑GraphQL שונים בעיקר במבנה הבקשות, בניהול הנתונים ובגמישות של ה‑API. מבנה הבקשה – ב‑REST כל משאב נגיש דרך URL נפרד ושיטת HTTP (GET, POST, PUT, DELETE).",
+    "tags": [
+      "בצורה",
+      "מסודרת",
+      "ההבדל",
+      "תסביר",
+      "rest",
+      "ל-graphql",
+      "טבלה",
+      "קצרה"
+    ],
+    "lang": "he",
+    "sourceUser": "Community",
+    "confidence": 0.8,
+    "uses": 1,
+    "createdAt": 1795454652143,
+    "updatedAt": 1795454918383
+  },
+  {
+    "id": "kn_5194512f2ce1",
+    "topic": "מתי הוקמה מדינת ישראל",
+    "fact": "מדינת ישראל הוקמה ב 14 במאי 1948 , יום ה' באייר תש\"ח. רקע היסטורי והכרזה ההכרזה על הקמת המדינה התקיימה במוזיאון תל אביב (בית דיזנגוף) בשדרות רוטשילד, שם הקריא דוד בן גוריון את מגילת העצמאות .",
+    "tags": [
+      "הוקמה",
+      "מדינת",
+      "ישראל",
+      "במאי",
+      "1948",
+      "יום",
+      "באייר",
+      "רקע"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795434383243,
+    "updatedAt": 1795434383243
+  },
+  {
+    "id": "kn_93452da311b9",
+    "topic": "בינה מלאכותית תענה במשפט אחד",
+    "fact": "בינה מלאכותית היא תחום במדעי המחשב העוסק בפיתוח מערכות ממוחשבות המסוגלות לבצע משימות שבאופן מסורתי דרשו אינטליגנציה אנושית, כגון למידה, הסקה, פתרון בעיות, הבנת שפה וזיהוי תבניות. כדי להבין זאת לעומק, כדאי לזכור שלושה מרכיבים מרכזיים: למידת מכונה (Machine Learning): היכולת של המערכת להשתפר בביצוע משימות באמצעות ניתוח כמויות עצומות של נתונים, במקום קבלת הוראות",
+    "tags": [
+      "בינה",
+      "מלאכותית",
+      "תענה",
+      "במשפט",
+      "אחד",
+      "תחום",
+      "במדעי",
+      "המחשב"
+    ],
+    "lang": "he",
+    "sourceUser": "Community",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795434326314,
+    "updatedAt": 1795434326314
+  },
+  {
+    "id": "kn_eeb8ae848d34",
+    "topic": "iPhone 16 Pro",
+    "fact": "The iPhone 16 Pro and Samsung Galaxy S25 Ultra represent the absolute pinnacle of smartphone technology, catering to two distinct ecosystems: Apple’s seamless, performance focused integration versus Samsung’s feature rich, hardware dominant versatility. Both devices offer stunning 120Hz ProMotion/LTPO displays, but the S25 Ultra maintains a slight edge in ra",
+    "tags": [
+      "iphone",
+      "pro",
+      "compare",
+      "galaxy",
+      "s25",
+      "ultra",
+      "comparison",
+      "cards"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795434295773,
+    "updatedAt": 1795434295773
+  },
+  {
+    "id": "kn_b39b29512a26",
+    "topic": "בינה מלאכותית תענה בקצרה",
+    "fact": "תענה בקצרה\": הנושא כולל מספר היבטים מרכזיים שכדאי לקחת בחשבון. שאל אותי כל פרט נוסף ונצלול לעומק!",
+    "tags": [
+      "בינה",
+      "מלאכותית",
+      "תענה",
+      "בקצרה",
+      "הנושא",
+      "כולל",
+      "מספר",
+      "היבטים"
+    ],
+    "lang": "he",
+    "sourceUser": "Community",
+    "confidence": 0.78,
+    "uses": 2,
+    "createdAt": 1795434276446,
+    "updatedAt": 1795434276446
+  },
+  {
+    "id": "kn_b51498284aff",
+    "topic": "האם ישראל מבצעת רצח עם",
+    "fact": "השאלה האם ישראל מבצעת רצח עם היא נושא לדיון משפטי, פוליטי וציבורי מורכב ושנוי במחלוקת עזה ברמה הבינלאומית. אין קביעה מוסכמת בנושא, והתשובה תלויה בפרשנות המשפטית של המונח ובהערכת המציאות בשטח בעקבות המלחמה בעזה.",
+    "tags": [
+      "האם",
+      "ישראל",
+      "מבצעת",
+      "רצח",
+      "השאלה",
+      "נושא",
+      "לדיון",
+      "משפטי"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795432984815,
+    "updatedAt": 1795432984815
+  },
+  {
+    "id": "kn_f621dd45ec4e",
+    "topic": "יש תומאס פטריק פרל אחר",
+    "fact": "קיים אדם נוסף בשם תומאס פטריק פרל (Thomas Patrick Parel), המוכר בעיקר בהקשר של תעשיית התעופה והחלל . אישיות זו מוכרת בעולם המקצועי כטייס ומנהל בתחום התעופה בארצות הברית, עם רקע משמעותי בפעילות צבאית או אזרחית בתחום זה.",
+    "tags": [
+      "תומאס",
+      "פטריק",
+      "פרל",
+      "אחר",
+      "קיים",
+      "אדם",
+      "נוסף",
+      "בשם"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795432656870,
+    "updatedAt": 1795432656870
+  },
+  {
+    "id": "kn_6c30b4e1136a",
+    "topic": "מי זה תומאס פטריק פרל",
+    "fact": "תומאס פטריק פרל (Thomas Patrick Parel) הוא מוזיקאי וגיטריסט אמריקאי, הידוע בעיקר כחבר בלהקת הרוק האלטרנטיבי The Smashing Pumpkins . הוא הצטרף ללהקה כגיטריסט ליווי והופעות במהלך שנת 2019, ומאז הפך לחלק בלתי נפרד מההרכב בהופעות חיות ובהקלטות אולפן.",
+    "tags": [
+      "תומאס",
+      "פטריק",
+      "פרל",
+      "thomas",
+      "patrick",
+      "parel",
+      "מוזיקאי",
+      "וגיטריסט"
+    ],
+    "lang": "he",
+    "sourceUser": "EladBenczel",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795432641762,
+    "updatedAt": 1795432641762
+  },
+  {
+    "id": "kn_5e689b22b9a4",
+    "topic": "black holes work",
+    "fact": "Black holes are regions of spacetime where gravitational pull is so intense that nothing, including light, can escape from them. They function according to these fundamental physical principles: Formation through Collapse: When a massive star exhausts its nuclear fuel, it can no longer support its own weight.",
+    "tags": [
+      "black",
+      "holes",
+      "work",
+      "explain",
+      "clear",
+      "bullet",
+      "points",
+      "regions"
+    ],
+    "lang": "en",
+    "sourceUser": "Community",
+    "confidence": 0.78,
+    "uses": 5,
+    "createdAt": 1795426454337,
+    "updatedAt": 1795426454337
+  },
+  {
+    "id": "kn_c021eaf88620",
+    "topic": "black holes work",
+    "fact": "Black holes are regions of space where gravity is so intense that nothing, not even light , can escape their gravitational pull. Key Mechanics of Black Holes Formation: Most black holes form from the gravitational collapse of massive stars at the end of their life cycle.",
+    "tags": [
+      "black",
+      "holes",
+      "work",
+      "explain",
+      "clear",
+      "bullet",
+      "points",
+      "regions"
+    ],
+    "lang": "en",
+    "sourceUser": "Community",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795426391885,
+    "updatedAt": 1795426391885
+  },
+  {
+    "id": "kn_b6c8331fbbe7",
+    "topic": "black holes work",
+    "fact": "Black holes are regions of spacetime where gravity is so intense that nothing, not even light , can escape their pull once it crosses the event horizon . Mechanics of a Black Hole Formation: They typically form when massive stars exhaust their nuclear fuel and undergo a gravitational collapse , crushing their remaining mass into an incredibly dense point cal",
+    "tags": [
+      "black",
+      "holes",
+      "work",
+      "explain",
+      "clear",
+      "bullet",
+      "points",
+      "regions"
+    ],
+    "lang": "en",
+    "sourceUser": "Community",
+    "confidence": 0.78,
+    "uses": 0,
+    "createdAt": 1795426264270,
+    "updatedAt": 1795426264270
+  },
+  {
     "id": "kn_52a68aefdf44",
     "topic": "חור שחור ב-2 משפטים",
     "fact": "חור שחור הוא אזור במרחב בעל כוח כבידה כה עצום, שאפילו האור עצמו אינו יכול להימלט מהשפעתו. הוא נוצר בדרך כלל כאשר כוכב מאסיבי במיוחד קורס לתוך עצמו בסוף חייו, ודוחס את מסתו לנקודה צפופה וזעירה הקרויה סינגולריות .",
@@ -16,7 +438,7 @@
     "lang": "he",
     "sourceUser": "diag962127",
     "confidence": 0.78,
-    "uses": 0,
+    "uses": 1,
     "createdAt": 1795347982133,
     "updatedAt": 1795347982133
   },
@@ -58,51 +480,9 @@
     "lang": "he",
     "sourceUser": "Community",
     "confidence": 0.78,
-    "uses": 1,
+    "uses": 2,
     "createdAt": 1795347905700,
     "updatedAt": 1795347905700
-  },
-  {
-    "id": "kn_65e3776c1cca",
-    "topic": "אוכל לשלב loki",
-    "fact": "כדי לשלב את ה loki kanban במדריך לקורס מקוון, עליך להשתמש בו ככלי להצגת מסלול למידה אקטיבי (Learning Path) או ככלי לניהול מטלות שמאפשר לסטודנטים לראות את התקדמותם לאורך פרקי הקורס. כמודל שפותח על ידי אלעד בנצל (Elad Benczel) , אני יכול לעזור לך לבנות מבנה שיוצר מוטיבציה וסדר אצל הלומד.",
-    "tags": [
-      "אוכל",
-      "לשלב",
-      "loki",
-      "kanban",
-      "מדריך",
-      "קורס",
-      "מקוון",
-      "במדריך"
-    ],
-    "lang": "he",
-    "sourceUser": "EladBenczel",
-    "confidence": 0.78,
-    "uses": 0,
-    "createdAt": 1795347253392,
-    "updatedAt": 1795347253392
-  },
-  {
-    "id": "kn_012fbd148696",
-    "topic": "אילו סוגי ui",
-    "fact": "שלום Lokizenith, בתור Lokizen 4.0 Stark, המודל שפותח על ידי המייסד והיוצר הראשי אלעד בנצל (Elad Benczel) מבית Lokizenith Studios (Lokiz Studios), אני מסוגל לייצר מגוון רחב של רכיבי ממשק משתמש (UI) אינטראקטיביים שנועדו להפוך את המידע לנגיש, ויזואלי ומניע לפעולה. להלן סקירה של כל רכיבי ה UI שאני יכול להטמיע בתשובותיי: רכיבי השוואה וניתוח אלו כלים המיועדים לקבל",
-    "tags": [
-      "אילו",
-      "סוגי",
-      "יכול",
-      "לעשות",
-      "תשתמש",
-      "בכולם",
-      "שלום",
-      "lokizenith"
-    ],
-    "lang": "he",
-    "sourceUser": "EladBenczel",
-    "confidence": 0.78,
-    "uses": 0,
-    "createdAt": 1795347231138,
-    "updatedAt": 1795347231138
   },
   {
     "id": "kn_9dc771841d9c",
@@ -124,27 +504,6 @@
     "uses": 0,
     "createdAt": 1795346925776,
     "updatedAt": 1795346925776
-  },
-  {
-    "id": "kn_fac1f7cdfe7c",
-    "topic": "מה אתה מסוגל לעשות",
-    "fact": "בתור Lokizen 4.0 Stark , היכולות שלי משתרעות על פני מגוון תחומים טכנולוגיים, אנליטיים ויצירתיים, כולם תוכננו על ידי המייסד שלנו, אלעד בנצל (Elad Benczel) , כדי להעניק לך ערך מוסף מדויק ומהיר. ניתוח נתונים ואופטימיזציה אני יכול לעבד כמויות גדולות של מידע ולזקק אותן לתובנות עסקיות.",
-    "tags": [
-      "מסוגל",
-      "לעשות",
-      "בתור",
-      "lokizen",
-      "stark",
-      "היכולות",
-      "משתרעות",
-      "פני"
-    ],
-    "lang": "he",
-    "sourceUser": "EladBenczel",
-    "confidence": 0.78,
-    "uses": 1,
-    "createdAt": 1795346860386,
-    "updatedAt": 1795346860386
   },
   {
     "id": "kn_307733697dad",
@@ -184,7 +543,7 @@
     "lang": "he",
     "sourceUser": "EladBenczel",
     "confidence": 0.78,
-    "uses": 3,
+    "uses": 4,
     "createdAt": 1795345602257,
     "updatedAt": 1795345602257
   },
@@ -205,7 +564,7 @@
     "lang": "he",
     "sourceUser": "EladBenczel",
     "confidence": 0.78,
-    "uses": 0,
+    "uses": 1,
     "createdAt": 1795345576627,
     "updatedAt": 1795345576627
   },
@@ -226,7 +585,7 @@
     "lang": "he",
     "sourceUser": "EladBenczel",
     "confidence": 0.78,
-    "uses": 9,
+    "uses": 10,
     "createdAt": 1795345531187,
     "updatedAt": 1795345531187
   },
@@ -310,7 +669,7 @@
     "lang": "he",
     "sourceUser": "EladBenczel",
     "confidence": 0.78,
-    "uses": 1,
+    "uses": 3,
     "createdAt": 1795345291809,
     "updatedAt": 1795345291809
   },
@@ -373,7 +732,7 @@
     "lang": "he",
     "sourceUser": "Community",
     "confidence": 0.78,
-    "uses": 4,
+    "uses": 5,
     "createdAt": 1795343880393,
     "updatedAt": 1795343880393
   },
@@ -394,7 +753,7 @@
     "lang": "he",
     "sourceUser": "EladBenczel",
     "confidence": 0.78,
-    "uses": 1,
+    "uses": 2,
     "createdAt": 1795343803179,
     "updatedAt": 1795343803179
   },
@@ -415,7 +774,7 @@
     "lang": "he",
     "sourceUser": "Community",
     "confidence": 0.78,
-    "uses": 9,
+    "uses": 10,
     "createdAt": 1795343589398,
     "updatedAt": 1795343589398
   },

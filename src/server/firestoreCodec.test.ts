@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildFirestoreUpgradeUrl,
   diffStringMap,
+  isFirestoreQuotaError,
   resolveFirebaseTarget,
   resolveStorageMode,
   sessionDocId,
+  shouldFallbackToDiskOnBootError,
   splitUtf8,
   suppressAccidentalUserWipe,
 } from './firestoreCodec.ts';
@@ -117,3 +120,26 @@ test('Firebase target comes from the applet config and env overrides it', () => 
     assert.equal(target.databaseId, '(default)');
   });
 });
+
+test('Firestore quota errors are detected and allow safe boot fallback unless LZ_STORAGE forces firestore', () => {
+  const quotaErr = new Error(
+    "8 RESOURCE_EXHAUSTED: Quota limit exceeded. Quota exceeded for quota metric 'Free daily read units per project (free tier database)'"
+  );
+  const netErr = new Error('UNAVAILABLE: DNS resolution failed');
+
+  assert.equal(isFirestoreQuotaError(quotaErr), true);
+  assert.equal(isFirestoreQuotaError(netErr), false);
+
+  assert.equal(shouldFallbackToDiskOnBootError(quotaErr, {}), true);
+  assert.equal(shouldFallbackToDiskOnBootError(quotaErr, { LZ_STORAGE: 'firestore' }), false);
+  assert.equal(shouldFallbackToDiskOnBootError(netErr, {}), false);
+
+  assert.equal(
+    buildFirestoreUpgradeUrl(
+      'gen-lang-client-0681505509',
+      'ai-studio-lokizenithai-d6782e3f-e427-4669-9fc7-3d14ae212597'
+    ),
+    'https://console.firebase.google.com/project/gen-lang-client-0681505509/firestore/databases/ai-studio-lokizenithai-d6782e3f-e427-4669-9fc7-3d14ae212597/data?openUpgradeDialog=true'
+  );
+});
+

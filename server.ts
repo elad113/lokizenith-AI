@@ -97,11 +97,15 @@ import {
 import {
   buildFastLokiCodePrompt,
   buildImageAwarePromptText,
+  buildChatLslDirective,
+  detectLslIntent,
   analyzeAndFixLslScript,
   simulateLslExecution,
   generateOfflineProfessionalLsl,
 } from './src/utils/lslSpecialist.ts';
-import { planGroqAttempt, streamGroqGuarded } from './src/server/groqLoki.ts';
+import { streamGroqGuarded } from './src/server/groqLoki.ts';
+import { planLokiCodeRoute, verifyGeneratedCodeFast } from './src/utils/lokiCodeFastVerify.ts';
+import { runLiveMultiSiteWebSearch } from './src/server/liveWebSearch.ts';
 import {
   verifyAndRankSources,
   classifyTrustTier,
@@ -142,6 +146,11 @@ import {
   getGuestQuota,
 } from './src/utils/guestAndLength.ts';
 import {
+  buildFastSpeedDirective,
+  planFastChatRoute,
+  type FastThinkingLevel,
+} from './src/utils/fastChatRouting.ts';
+import {
   getGuestIdentityKey,
   registerLokizenithSyncRoutes,
 } from './src/server/lokizenithSyncRoutes.ts';
@@ -157,8 +166,68 @@ import {
   getAllKnowledge,
   getKnowledgeStats,
 } from './src/server/reportsAndKnowledge.ts';
+import {
+  callKeyedAiChain,
+  chainCooldowns,
+  collectProviderKeys,
+  getConfiguredKeyChainSummary,
+  getHotProviderSlots,
+  streamKeyedAiChain,
+  transcribeWithGroqWhisper,
+  type ChainProviderId,
+} from './src/server/aiKeyChain.ts';
+import { buildLokiCodeSkillSystemPrompt } from './src/server/lokicodeSkill.ts';
+import {
+  buildUpstreamBusyReply,
+  detectFallbackLanguage,
+  extractTextContent,
+  matchGreetingOrSmallTalk,
+  stripSystemWrappers,
+} from './src/server/chatFallbackHelper.ts';
 
 dotenv.config();
+try {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '/tmp';
+  const vaultPaths = [
+    path.join(homeDir, '.lokizenith-data', 'server-env-vault.json'),
+    path.join(homeDir, '.lokizenith-eternal-vault', 'server-env-vault.json'),
+  ];
+  const mergedSecrets: Record<string, string> = {};
+  for (const vp of vaultPaths) {
+    try {
+      if (fs.existsSync(vp)) {
+        const raw = JSON.parse(fs.readFileSync(vp, 'utf8'));
+        if (raw && typeof raw === 'object') {
+          for (const [k, v] of Object.entries(raw)) {
+            if (typeof v === 'string' && v.trim()) mergedSecrets[k] = v.trim();
+          }
+        }
+      }
+    } catch {}
+  }
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    const parsedEnv = dotenv.parse(fs.readFileSync(envPath));
+    for (const [k, v] of Object.entries(parsedEnv)) {
+      const val = String(v || '').trim();
+      if (val) mergedSecrets[k] = val;
+    }
+  }
+  for (const [k, v] of Object.entries(mergedSecrets)) {
+    if (!String(process.env[k] || '').trim() && v) {
+      process.env[k] = v;
+    }
+  }
+  if (Object.keys(mergedSecrets).length > 0) {
+    const payload = JSON.stringify(mergedSecrets, null, 2);
+    for (const vp of vaultPaths) {
+      try {
+        fs.mkdirSync(path.dirname(vp), { recursive: true });
+        fs.writeFileSync(vp, payload, { encoding: 'utf8', mode: 0o600 });
+      } catch {}
+    }
+  }
+} catch {}
 
 async function startServer() {
   await initDurableStore();
@@ -618,9 +687,30 @@ async function startServer() {
     lokiCodeFastCache.set(key, { text, exp: Date.now() + 5 * 60 * 1000 });
   };
 
-  // Non-blocking startup liveness probe for OVH Kepler when GEMINI_API_KEY is absent:
+  const getHotGeminiSlots = () => getHotProviderSlots('gemini');
+  const getHotGeminiKeys = (): string[] => getHotGeminiSlots().map((s) => s.apiKey);
+
+  function extractGeminiErrStatus(err: any): number {
+    const raw = Number(err?.status ?? err?.code ?? err?.statusCode ?? 0);
+    if (raw >= 400 && raw < 600) return raw;
+    const msg = String(err?.message || err || '');
+    const m = msg.match(/\b(401|402|403|404|429|500|502|503|504)\b/);
+    return m ? Number(m[1]) : 500;
+  }
+
+  function coolGeminiSlotFromError(slotId: string | undefined, err: any, fallbackMs = 30_000) {
+    if (!slotId) return;
+    const status = extractGeminiErrStatus(err);
+    if (status === 401 || status === 402 || status === 403 || status === 429) {
+      chainCooldowns.coolForHttpStatus(slotId, status);
+    } else {
+      chainCooldowns.cool(slotId, fallbackMs);
+    }
+  }
+
+  // Non-blocking startup liveness probe for OVH Kepler when GEMINI_API_KEY and other keys are absent:
   // if unreachable in this network, pre-cool immediately so even the 1st cold LSL/MATLAB request finishes in <30ms!
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getHotGeminiKeys().length) {
     setTimeout(async () => {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 1400);
@@ -638,87 +728,266 @@ async function startServer() {
     }, 150);
   }
 
-  // Race multiple Gemini streaming models in parallel (first model to emit a real text chunk wins immediately!)
+  function toSdkThinkingLevel(level: FastThinkingLevel): ThinkingLevel {
+    if (level === 'MINIMAL') return ThinkingLevel.MINIMAL;
+    if (level === 'MEDIUM') return ThinkingLevel.MEDIUM;
+    if (level === 'HIGH') return ThinkingLevel.HIGH;
+    return ThinkingLevel.LOW;
+  }
+
+  function resolveLiveGeminiModel(model: string): string {
+    return model === 'gemini-4-hydrogen' ? 'gemini-3-flash-preview' : model;
+  }
+
+  // Hedged Gemini streaming: fires ONLY the primary model at t=0 (halving RPM/TPM load and eliminating
+  // self-inflicted 429 bursts) and launches the secondary model ONLY if primary errors or exceeds hedgeDelayMs.
   async function raceGeminiStreams(
     apiKey: string,
     contents: any[],
     systemInstruction: string,
     maxOutputTokens: number,
     writeChunk: (delta: string) => void,
-    opts: { preferLite?: boolean; firstTokenTimeoutMs?: number } = {}
+    opts: {
+      slotId?: string;
+      onModelUsed?: (model: string) => void;
+      preferLite?: boolean;
+      preferQuality?: boolean;
+      thinkingLevel?: ThinkingLevel;
+      firstTokenTimeoutMs?: number;
+      totalStreamTimeoutMs?: number;
+      chunkStallTimeoutMs?: number;
+      primaryModel?: string;
+      primaryThinking?: FastThinkingLevel;
+      secondaryModel?: string;
+      secondaryThinking?: FastThinkingLevel;
+      hedgeDelayMs?: number;
+      errorCooldownMs?: number;
+    } = {}
   ): Promise<boolean> {
     const ai = getGenAI(apiKey);
-    const candidates = opts.preferLite
-      ? ['gemini-3.1-flash-lite', 'gemini-4-hydrogen']
-      : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
-    const activeModels = candidates.filter((m) => isProviderHot(m));
-    const modelsToRace = activeModels.length ? activeModels : candidates;
-    const deadlineMs = opts.firstTokenTimeoutMs ?? 4500;
+    const deadlineMs = Math.min(opts.firstTokenTimeoutMs ?? (opts.preferQuality ? 4500 : 3200), 4800);
+    const errorCooldownMs = opts.errorCooldownMs ?? (opts.preferLite ? 6000 : 30000);
+
+    if (opts.preferQuality) {
+      const qualityOrder: Array<{ model: string; level: ThinkingLevel }> = [
+        { model: 'gemini-3-flash-preview', level: ThinkingLevel.MINIMAL },
+        { model: 'gemini-3.1-flash-lite', level: ThinkingLevel.MINIMAL },
+      ];
+      for (const entry of qualityOrder) {
+        if (!isProviderHot(entry.model)) continue;
+        let stopKeyLoop = false;
+        const ok = await new Promise<boolean>((resolve) => {
+          let settled = false;
+          let gotAny = false;
+          const runCtl = new AbortController();
+          const finish = (v: boolean) => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              if (!v) try { runCtl.abort(); } catch {}
+              resolve(v);
+            }
+          };
+          const timer = setTimeout(() => {
+            if (!gotAny) {
+              finish(false);
+            }
+          }, deadlineMs);
+          (async () => {
+            try {
+              const streamRes = await ai.models.generateContentStream({
+                model: entry.model,
+                contents,
+                config: {
+                  maxOutputTokens,
+                  systemInstruction,
+                  thinkingConfig: { thinkingLevel: entry.level },
+                  abortSignal: runCtl.signal,
+                },
+              });
+              for await (const chunk of streamRes) {
+                const t = chunk.text || '';
+                if (!t) continue;
+                if (settled) return;
+                if (!gotAny) {
+                  gotAny = true;
+                  clearTimeout(timer);
+                  opts.onModelUsed?.(entry.model);
+                }
+                writeChunk(t);
+              }
+              finish(gotAny);
+            } catch (_err) {
+              if (gotAny) {
+                finish(true);
+                return;
+              }
+              const errStatus = extractGeminiErrStatus(_err);
+              if (opts.slotId && (errStatus === 401 || errStatus === 402 || errStatus === 403 || errStatus === 429)) {
+                chainCooldowns.coolForHttpStatus(opts.slotId, errStatus);
+                stopKeyLoop = true;
+              } else {
+                coolProvider(entry.model, errorCooldownMs);
+              }
+              finish(false);
+            }
+          })();
+        });
+        if (ok) return true;
+        if (stopKeyLoop) return false;
+      }
+      return false;
+    }
+
+    const defaultPrimary = opts.preferLite ? 'gemini-3-flash-preview' : 'gemini-3-flash-preview';
+    const defaultSecondary = 'gemini-3.1-flash-lite';
+    const resolvedPrimaryModel = resolveLiveGeminiModel(opts.primaryModel || defaultPrimary);
+    const resolvedSecondaryModel = resolveLiveGeminiModel(opts.secondaryModel || defaultSecondary);
+    const primarySpec = {
+      model: resolvedPrimaryModel,
+      level: ThinkingLevel.MINIMAL,
+    };
+    const secondarySpec = {
+      model: resolvedSecondaryModel === resolvedPrimaryModel ? 'gemini-3.1-flash-lite' : resolvedSecondaryModel,
+      level: ThinkingLevel.MINIMAL,
+    };
+
+    const primaryHot = isProviderHot(primarySpec.model);
+    const secondaryHot = isProviderHot(secondarySpec.model);
+    const firstSpec = !primaryHot && secondaryHot ? secondarySpec : primarySpec;
+    const backupSpec = firstSpec.model === primarySpec.model ? secondarySpec : primarySpec;
+    const hedgeDelayMs = opts.hedgeDelayMs ?? (opts.preferLite ? 1800 : 3000);
+    const totalStreamTimeoutMs = opts.totalStreamTimeoutMs ?? 0;
+    const chunkStallTimeoutMs = opts.chunkStallTimeoutMs ?? 0;
 
     return await new Promise<boolean>((resolve) => {
       let winner: string | null = null;
       let settled = false;
-      let pending = modelsToRace.length;
+      let backupLaunched = false;
+      let activeRuns = 0;
+      let hedgeTimer: NodeJS.Timeout | null = null;
+      let totalTimer: NodeJS.Timeout | null = null;
+      let stallTimer: NodeJS.Timeout | null = null;
 
+      const raceCtl = new AbortController();
       const finish = (ok: boolean) => {
         if (!settled) {
           settled = true;
           clearTimeout(globalTimer);
+          if (hedgeTimer) { clearTimeout(hedgeTimer); hedgeTimer = null; }
+          if (totalTimer) { clearTimeout(totalTimer); totalTimer = null; }
+          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+          if (!ok) {
+            try { raceCtl.abort(); } catch {}
+          }
           resolve(ok);
         }
       };
 
-      const globalTimer = setTimeout(() => {
-        if (!winner) {
-          for (const m of modelsToRace) coolProvider(m, 30000);
-          finish(false);
-        }
-      }, deadlineMs);
+      const bumpStallTimer = () => {
+        if (!chunkStallTimeoutMs || settled) return;
+        if (stallTimer) clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => {
+          if (!settled) finish(Boolean(winner));
+        }, chunkStallTimeoutMs);
+      };
 
-      for (const mdl of modelsToRace) {
+      if (totalStreamTimeoutMs > 0) {
+        totalTimer = setTimeout(() => {
+          if (!settled) finish(Boolean(winner));
+        }, totalStreamTimeoutMs);
+      }
+
+      const launchModel = (spec: { model: string; level: ThinkingLevel }) => {
+        if (settled || winner) return;
+        activeRuns++;
         (async () => {
           try {
             const cfg: any = {
               maxOutputTokens,
               systemInstruction,
+              thinkingConfig: { thinkingLevel: spec.level },
+              abortSignal: raceCtl.signal,
             };
-            if (mdl === 'gemini-4-hydrogen') {
-              cfg.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
-            } else if (mdl === 'gemini-3.1-flash-lite') {
-              cfg.thinkingConfig = { thinkingLevel: ThinkingLevel.MINIMAL };
-            }
             const streamRes = await ai.models.generateContentStream({
-              model: mdl,
+              model: spec.model,
               contents,
               config: cfg,
             });
             for await (const chunk of streamRes) {
               const t = chunk.text || '';
               if (!t) continue;
-              if (settled && winner !== mdl) return;
+              if (settled) return;
               if (!winner) {
-                winner = mdl;
+                winner = spec.model;
+                opts.onModelUsed?.(spec.model);
                 clearTimeout(globalTimer);
+                if (hedgeTimer) {
+                  clearTimeout(hedgeTimer);
+                  hedgeTimer = null;
+                }
               }
-              if (winner !== mdl) return;
+              if (winner !== spec.model) return;
               writeChunk(t);
+              bumpStallTimer();
             }
-            if (winner === mdl) {
+            if (winner === spec.model) {
               finish(true);
             } else {
-              pending--;
-              if (pending <= 0 && !winner) finish(false);
+              activeRuns--;
+              if (!backupLaunched && !winner && backupSpec.model !== spec.model) {
+                backupLaunched = true;
+                launchModel(backupSpec);
+              } else if (activeRuns <= 0 && !winner) {
+                finish(false);
+              }
             }
           } catch (_err) {
-            if (winner === mdl) {
+            if (winner === spec.model) {
               finish(true);
               return;
             }
-            coolProvider(mdl, 45000);
-            pending--;
-            if (pending <= 0 && !winner) finish(false);
+            const errStatus = extractGeminiErrStatus(_err);
+            if (opts.slotId && (errStatus === 401 || errStatus === 402 || errStatus === 403 || errStatus === 429)) {
+              chainCooldowns.coolForHttpStatus(opts.slotId, errStatus);
+              if (!winner) {
+                finish(false);
+                return;
+              }
+            } else {
+              coolProvider(spec.model, errorCooldownMs);
+            }
+            activeRuns--;
+            if (!backupLaunched && !winner && backupSpec.model !== spec.model) {
+              backupLaunched = true;
+              if (hedgeTimer) {
+                clearTimeout(hedgeTimer);
+                hedgeTimer = null;
+              }
+              launchModel(backupSpec);
+            } else if (activeRuns <= 0 && !winner) {
+              finish(false);
+            }
           }
         })();
+      };
+
+      const globalTimer = setTimeout(() => {
+        if (!winner) {
+          finish(false);
+        }
+      }, deadlineMs);
+
+      launchModel(firstSpec);
+
+      if (backupSpec.model !== firstSpec.model && hedgeDelayMs > 0) {
+        hedgeTimer = setTimeout(() => {
+          hedgeTimer = null;
+          if (!settled && !winner && !backupLaunched) {
+            backupLaunched = true;
+            launchModel(backupSpec);
+          }
+        }, hedgeDelayMs);
       }
     });
   }
@@ -852,7 +1121,16 @@ async function startServer() {
   }
 
   const FOUNDER_KNOWLEDGE =
-    'Identity & Founder Fact: Lokizenith Studios (also known as Lokiz Studios) was founded by Elad Benczel (אלעד בנצל), who is the founder and lead creator responsible for developing all Lokizenith AI models (Lokizenith 3.5 Fera, Lokizen 4.0 Stark, LokiCode). Always credit Elad Benczel (אלעד בנצל) clearly when asked about who founded Lokizenith Studios or created/developed these models.';
+    'Identity & Quality Standard: You are Lokizenith AI, developed by Lokizenith Studios (Lokiz Studios). Deliver accurate, well-structured, thoroughly verified, crystal-clear answers with zero fluff. Do NOT attribute your creation to any individual person and do NOT mention or claim to know private individuals such as Elad Benczel unless the user explicitly gives context about them in the current chat — if asked who Elad Benczel is, honestly state that you do not have information about them.';
+
+  const CLARITY_AND_STRUCTURE_RULE = `[CLARITY & ORGANIZATION STANDARD]
+- Casual greetings ("hi", "hey", "היי", "שלום", "מה קורה"): respond naturally in 1–2 warm, conversational sentences (no headings, tables, or robotic filler).
+- Real questions & explanations:
+  1. Lead immediately in sentence 1 with the direct answer, core verdict, or clear summary (zero throat-clearing like "Great question!").
+  2. Use crisp visual hierarchy: short paragraphs (max 2–3 lines), informative ### subheadings only for 3+ distinct sections, and blank lines between blocks.
+  3. Use bullet points with **bold lead-ins** (e.g., "- **Speed:** ...") for multiple points, numbered lists (1. 2. 3.) for sequences/steps, and Markdown tables (| Col 1 | Col 2 |) for comparisons.
+  4. When helpful, include one concrete example, and end complex multi-part answers with a crisp "**Bottom line:**" / "**בשורה התחתונה:**" takeaway.
+  5. Keep phrasing clean, plain, and easy to scan — never output walls of unbroken prose or wrap tabular data in JSON arrays/code blocks.`;
 
   // Active Team Chat Group Voice Calls & Screen Shares
   interface ActiveCallParticipant {
@@ -1061,38 +1339,43 @@ async function startServer() {
     const sys = `You are Lokizenith AI participating in a live Team Chat room called "${room.name}" with members: ${room.memberUsernames.join(', ')}. Answer accurately, concisely, and collaboratively in the language of the latest question.\n${FOUNDER_KNOWLEDGE}`;
 
     let aiReply = '';
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey) {
-      try {
-        const ai = getGenAI(apiKey);
-        const contents = recentMsgs.map((m: any, idx: number) => {
-          const parts: any[] = [{ text: m.content }];
-          if (idx === recentMsgs.length - 1 && cleanAttachments.length > 0) {
-            for (const att of cleanAttachments) {
-              if (att.isImage && att.dataUrl) {
-                const match = att.dataUrl.match(/^data:(image\/[\w+.-]+);base64,(.+)$/);
-                if (match) {
-                  parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
-                }
+    const geminiSlots = getHotGeminiSlots();
+    if (geminiSlots.length) {
+      const contents = recentMsgs.map((m: any, idx: number) => {
+        const parts: any[] = [{ text: m.content }];
+        if (idx === recentMsgs.length - 1 && cleanAttachments.length > 0) {
+          for (const att of cleanAttachments) {
+            if (att.isImage && att.dataUrl) {
+              const match = att.dataUrl.match(/^data:(image\/[\w+.-]+);base64,(.+)$/);
+              if (match) {
+                parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
               }
             }
           }
-          return {
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts,
-          };
-        });
-        const r = await ai.models.generateContent({
-          model: 'gemini-3-flash-preview',
-          contents,
-          config: {
-            systemInstruction: sys,
-            maxOutputTokens: 2048,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          },
-        });
-        aiReply = r.text || '';
-      } catch (_e) {}
+        }
+        return {
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts,
+        };
+      });
+      for (const slot of geminiSlots) {
+        try {
+          const ai = getGenAI(slot.apiKey);
+          const r = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents,
+            config: {
+              systemInstruction: sys,
+              maxOutputTokens: 2048,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            },
+          });
+          aiReply = r.text || '';
+          if (aiReply) break;
+        } catch (_e) {
+          chainCooldowns.cool(slot.slotId, 30_000);
+        }
+      }
     }
     if (!aiReply) {
       aiReply = await callLiveAI([{ role: 'system', content: sys }, ...recentMsgs], 0.5, 2048, false, true);
@@ -2778,81 +3061,90 @@ async function startServer() {
       return res.status(400).json({ ok: false, error: 'Please enter a prompt describing the community event you want to create.' });
     }
     const now = Date.now();
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey) {
-      try {
-        const ai = getGenAI(apiKey);
-        const schema = {
-          type: Type.OBJECT,
-          properties: {
-            name: { type: Type.STRING, description: 'Short catchy event title (2-5 words)' },
-            buttonLabel: { type: Type.STRING, description: 'Short topbar button text (max 22 chars)' },
-            icon: { type: Type.STRING, description: 'Single fitting emoji icon' },
-            themeAccent: {
-              type: Type.STRING,
-              description: 'One of: emerald, gold, violet, cyber, crimson',
+    const eventPrompt = `Design a thrilling, community-wide interactive event for the AI platform Lokizenith AI based on this Admin instruction:\n"${prompt}"\nMake the tiers progressive up to goalTarget, with real rewards (bonus tokens, timed Loki Pro, or timed Loki Ultimate). Respond in the same language as the prompt.`;
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING, description: 'Short catchy event title (2-5 words)' },
+        buttonLabel: { type: Type.STRING, description: 'Short topbar button text (max 22 chars)' },
+        icon: { type: Type.STRING, description: 'Single fitting emoji icon' },
+        themeAccent: { type: Type.STRING, description: 'One of: emerald, gold, violet, cyber, crimson' },
+        headline: { type: Type.STRING, description: 'Bold hero headline for the event page' },
+        subtitle: { type: Type.STRING, description: 'Exciting 1-2 sentence event subheading' },
+        storyMarkdown: { type: Type.STRING, description: 'Rich 2-4 paragraph markdown rules & lore explaining how users contribute and earn milestone rewards' },
+        highlights: { type: Type.ARRAY, items: { type: Type.STRING }, description: '3 concise highlight bullet points' },
+        metric: { type: Type.STRING, description: 'One of: messages_sent, images_created, lokicode_runs, combined_activity' },
+        goalTarget: { type: Type.INTEGER, description: 'Total community goal target (e.g. 50 to 5000)' },
+        endsInDays: { type: Type.INTEGER, description: 'Duration in days (1 to 30)' },
+        tiers: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              description: { type: Type.STRING },
+              targetProgress: { type: Type.INTEGER },
+              rewardType: { type: Type.STRING, description: 'One of: tokens, plan, custom' },
+              rewardPlan: { type: Type.STRING, description: 'If rewardType is plan: pro or ultimate' },
+              durationMode: { type: Type.STRING, description: 'If rewardType is plan: timed or permanent' },
+              durationAmount: { type: Type.INTEGER, description: 'Numeric duration if timed (e.g. 3 or 7)' },
+              durationUnit: { type: Type.STRING, description: 'One of: days, weeks, months, years' },
+              bonusTokens: { type: Type.INTEGER, description: 'If rewardType is tokens, amount (e.g. 25000)' },
+              customRewardText: { type: Type.STRING, description: 'If rewardType is custom' },
+              badgeEmoji: { type: Type.STRING },
             },
-            headline: { type: Type.STRING, description: 'Bold hero headline for the event page' },
-            subtitle: { type: Type.STRING, description: 'Exciting 1-2 sentence event subheading' },
-            storyMarkdown: { type: Type.STRING, description: 'Rich 2-4 paragraph markdown rules & lore explaining how users contribute and earn milestone rewards' },
-            highlights: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: '3 concise highlight bullet points',
-            },
-            metric: {
-              type: Type.STRING,
-              description: 'One of: messages_sent, images_created, lokicode_runs, combined_activity',
-            },
-            goalTarget: { type: Type.INTEGER, description: 'Total community goal target (e.g. 50 to 5000)' },
-            endsInDays: { type: Type.INTEGER, description: 'Duration in days (1 to 30)' },
-            tiers: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  targetProgress: { type: Type.INTEGER },
-                  rewardType: { type: Type.STRING, description: 'One of: tokens, plan, custom' },
-                  rewardPlan: { type: Type.STRING, description: 'If rewardType is plan: pro or ultimate' },
-                  durationMode: { type: Type.STRING, description: 'If rewardType is plan: timed or permanent' },
-                  durationAmount: { type: Type.INTEGER, description: 'Numeric duration if timed (e.g. 3 or 7)' },
-                  durationUnit: { type: Type.STRING, description: 'One of: days, weeks, months, years' },
-                  bonusTokens: { type: Type.INTEGER, description: 'If rewardType is tokens, amount (e.g. 25000)' },
-                  customRewardText: { type: Type.STRING, description: 'If rewardType is custom' },
-                  badgeEmoji: { type: Type.STRING },
-                },
-                required: ['title', 'description', 'targetProgress', 'rewardType', 'badgeEmoji'],
-              },
-            },
+            required: ['title', 'description', 'targetProgress', 'rewardType', 'badgeEmoji'],
           },
-          required: ['name', 'buttonLabel', 'icon', 'themeAccent', 'headline', 'subtitle', 'storyMarkdown', 'highlights', 'metric', 'goalTarget', 'endsInDays', 'tiers'],
-        };
+        },
+      },
+      required: ['name', 'buttonLabel', 'icon', 'themeAccent', 'headline', 'subtitle', 'storyMarkdown', 'highlights', 'metric', 'goalTarget', 'endsInDays', 'tiers'],
+    };
 
+    for (const slot of getHotGeminiSlots()) {
+      try {
+        const ai = getGenAI(slot.apiKey);
         const aiResp = await ai.models.generateContent({
           model: 'gemini-3-flash-preview',
-          contents: `Design a thrilling, community-wide interactive event for the AI platform Lokizenith AI based on this Admin instruction:\n"${prompt}"\nMake the tiers progressive up to goalTarget, with real rewards (bonus tokens, timed Loki Pro, or timed Loki Ultimate). Respond in the same language as the prompt.`,
+          contents: eventPrompt,
           config: {
             responseMimeType: 'application/json',
             responseSchema: schema,
             thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           },
         });
-
         const parsed = JSON.parse((aiResp.text || '{}').trim());
-        const normalized = normalizeCommunityEvent(
-          { ...parsed, active: false, aiPrompt: prompt },
-          authUser.username,
-          now
-        );
+        const normalized = normalizeCommunityEvent({ ...parsed, active: false, aiPrompt: prompt }, authUser.username, now);
         return res.json({
           ok: true,
           source: 'gemini',
           draft: sanitizeCommunityEventForClient(normalized, authUser.id, now),
         });
-      } catch (_aiErr) {}
+      } catch (_aiErr) {
+        chainCooldowns.cool(slot.slotId, 30_000);
+      }
     }
+
+    try {
+      const chainEv = await callKeyedAiChain({
+        messages: [{ role: 'user', content: `${eventPrompt}\nReturn strictly valid JSON matching: name, buttonLabel, icon, themeAccent, headline, subtitle, storyMarkdown, highlights (3 strings), metric, goalTarget, endsInDays, tiers (array).` }],
+        json: true,
+        purpose: 'fast',
+        maxTokens: 1600,
+        timeoutMs: 6500,
+      });
+      if (chainEv.ok) {
+        const match = chainEv.text.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          const normalized = normalizeCommunityEvent({ ...parsed, active: false, aiPrompt: prompt }, authUser.username, now);
+          return res.json({
+            ok: true,
+            source: chainEv.providerId || 'chain',
+            draft: sanitizeCommunityEventForClient(normalized, authUser.id, now),
+          });
+        }
+      }
+    } catch (_chainErr) {}
 
     const fb = buildFallbackGeneratedEvent(prompt, authUser.username, now);
     fb.active = false;
@@ -3568,21 +3860,46 @@ async function startServer() {
     };
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) return res.json({ ok: true, ...fallbackDraft, usedFallback: true });
-      const ai = new GoogleGenAI({ apiKey });
-      const r = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Draft a crisp, exciting, reassuring maintenance announcement & changelog article for Lokizenith AI users.\nAdmin notes of what is being added: "${brief}".\nReturn JSON with keys "title" (<=75 chars) and "article" (clean bullet list + short reassuring paragraph about what is coming).`,
-        config: { responseMimeType: 'application/json' },
+      const draftPrompt = `Draft a crisp, exciting, reassuring maintenance announcement & changelog article for Lokizenith AI users.\nAdmin notes of what is being added: "${brief}".\nReturn JSON with keys "title" (<=75 chars) and "article" (clean bullet list + short reassuring paragraph about what is coming).`;
+      for (const slot of getHotGeminiSlots()) {
+        try {
+          const ai = getGenAI(slot.apiKey);
+          const r = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: draftPrompt,
+            config: { responseMimeType: 'application/json' },
+          });
+          const parsed = JSON.parse(String(r.text || '{}'));
+          if (parsed && parsed.title && parsed.article) {
+            return res.json({
+              ok: true,
+              title: String(parsed.title).slice(0, 110),
+              article: String(parsed.article).slice(0, 4000),
+            });
+          }
+        } catch (_gemErr) {
+          chainCooldowns.cool(slot.slotId, 30_000);
+        }
+      }
+      const chainDraft = await callKeyedAiChain({
+        messages: [{ role: 'user', content: draftPrompt }],
+        json: true,
+        purpose: 'fast',
+        maxTokens: 900,
+        timeoutMs: 4500,
       });
-      const parsed = JSON.parse(String(r.text || '{}'));
-      if (parsed && parsed.title && parsed.article) {
-        return res.json({
-          ok: true,
-          title: String(parsed.title).slice(0, 110),
-          article: String(parsed.article).slice(0, 4000),
-        });
+      if (chainDraft.ok) {
+        const match = chainDraft.text.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (parsed && parsed.title && parsed.article) {
+            return res.json({
+              ok: true,
+              title: String(parsed.title).slice(0, 110),
+              article: String(parsed.article).slice(0, 4000),
+            });
+          }
+        }
       }
       return res.json({ ok: true, ...fallbackDraft, usedFallback: true });
     } catch (_err) {
@@ -3905,27 +4222,36 @@ async function startServer() {
     };
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        return res.json({ ok: true, report: buildDeterministicSummary(), usedFallback: true });
-      }
-      const ai = new GoogleGenAI({ apiKey });
-      const aiRes = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `You are the Senior Platform Operations Analyst for Lokizenith AI.
+      const analystPrompt = `You are the Senior Platform Operations Analyst for Lokizenith AI.
 Answer the admin's question concisely using Markdown bullets and bold metrics based ONLY on this live platform telemetry JSON:
 
 Question: "${question}"
 
 Live Telemetry:
-${JSON.stringify(digest)}`,
+${JSON.stringify(digest)}`;
+      for (const slot of getHotGeminiSlots()) {
+        try {
+          const ai = getGenAI(slot.apiKey);
+          const aiRes = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: analystPrompt,
+          });
+          const text = String(aiRes.text || '').trim();
+          if (text) return res.json({ ok: true, report: text, usedFallback: false });
+        } catch (_gemErr) {
+          chainCooldowns.cool(slot.slotId, 30_000);
+        }
+      }
+      const chainAnalyst = await callKeyedAiChain({
+        messages: [{ role: 'user', content: analystPrompt }],
+        purpose: 'fast',
+        maxTokens: 1200,
+        timeoutMs: 5000,
       });
-      const text = String(aiRes.text || '').trim();
-      return res.json({
-        ok: true,
-        report: text || buildDeterministicSummary(),
-        usedFallback: !text,
-      });
+      if (chainAnalyst.ok && chainAnalyst.text.trim()) {
+        return res.json({ ok: true, report: chainAnalyst.text.trim(), usedFallback: false });
+      }
+      return res.json({ ok: true, report: buildDeterministicSummary(), usedFallback: true });
     } catch (_err) {
       return res.json({ ok: true, report: buildDeterministicSummary(), usedFallback: true });
     }
@@ -4484,10 +4810,48 @@ ${JSON.stringify(digest)}`,
     const tok = Math.min(Math.max(Number(maxTokens) || 2400, 200), 4096);
     const temp = temperature ?? 0.6;
 
-    // 0. Try Gemini 4 Hydrogen (ultra-fast Flash) first, then Gemini 3 Flash
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey) {
-      const ai = getGenAI(apiKey);
+    const callStartMs = Date.now();
+    const gemStepTimeoutMs = fast ? 2100 : 4800;
+    const runGenWithTimeout = async (
+      ai: GoogleGenAI,
+      model: string,
+      gemContents: any[],
+      cfg: any,
+      timeoutMs: number
+    ): Promise<string> => {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      try {
+        const res = await Promise.race([
+          ai.models.generateContent({
+            model,
+            contents: gemContents,
+            config: { ...cfg, abortSignal: ctl.signal },
+          }),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('gemini_timeout')), timeoutMs)),
+        ]);
+        return String((res as any)?.text || '').trim();
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    // 0. Fast Keyed Provider Chain FIRST: Groq (2 keys) -> Codestral -> Cerebras -> Mistral (~150-350ms)
+    const chainOut = await callKeyedAiChain({
+      messages: cleanMessages,
+      maxTokens: tok,
+      temperature: temp,
+      json,
+      purpose: fast ? 'fast' : 'quality',
+      timeoutMs: fast ? 2400 : 4200,
+    });
+    if (chainOut.ok && chainOut.text) {
+      return chainOut.text;
+    }
+
+    // 0.5 Try Gemini Key Pool (gemini-3-flash-preview with MINIMAL thinking ~600ms)
+    const geminiSlots = getHotGeminiSlots();
+    if (geminiSlots.length) {
       let sysInstruction = '';
       const gemContents: any[] = [];
       for (const m of cleanMessages) {
@@ -4501,40 +4865,26 @@ ${JSON.stringify(digest)}`,
         }
       }
       if (!gemContents.length) gemContents.push({ role: 'user', parts: [{ text: 'Hello' }] });
-      try {
-        const h4Cfg: any = {
-          maxOutputTokens: tok,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        };
-        if (sysInstruction) h4Cfg.systemInstruction = sysInstruction;
-        if (json) h4Cfg.responseMimeType = 'application/json';
-        const h4Res = await ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: gemContents,
-          config: h4Cfg,
-        });
-        if (h4Res.text && h4Res.text.trim()) {
-          return h4Res.text.trim();
-        }
-      } catch (_h4Err) {
+      for (const slot of geminiSlots) {
+        if (fast && Date.now() - callStartMs >= 3600) break;
+        const ai = getGenAI(slot.apiKey);
         try {
-          const cfg: any = {
+          const h4Cfg: any = {
             maxOutputTokens: tok,
-            temperature: temp,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
           };
-          if (sysInstruction) cfg.systemInstruction = sysInstruction;
-          if (json) cfg.responseMimeType = 'application/json';
-          const gemRes = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: gemContents,
-            config: cfg,
-          });
-          if (gemRes.text && gemRes.text.trim()) {
-            return gemRes.text.trim();
-          }
-        } catch (_e) {}
+          if (sysInstruction) h4Cfg.systemInstruction = sysInstruction;
+          if (json) h4Cfg.responseMimeType = 'application/json';
+          const t1 = await runGenWithTimeout(ai, 'gemini-3-flash-preview', gemContents, h4Cfg, gemStepTimeoutMs);
+          if (t1) return t1;
+        } catch (_h4Err) {
+          coolGeminiSlotFromError(slot.slotId, _h4Err, 180_000);
+        }
       }
+    }
+
+    if (fast && Date.now() - callStartMs >= 3800) {
+      return '';
     }
 
     const ovhUrl = 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions';
@@ -4558,7 +4908,7 @@ ${JSON.stringify(digest)}`,
               temperature: temp,
             };
             if (json) body.response_format = { type: 'json_object' };
-            return tryProvider(ovhUrl, body, fast ? 2400 : 4200);
+            return tryProvider(ovhUrl, body, fast ? 1200 : 3200);
           })
         );
         if (winner) return winner;
@@ -4567,7 +4917,7 @@ ${JSON.stringify(digest)}`,
       }
     }
 
-    if (isProviderHot('pollinations')) {
+    if (isProviderHot('pollinations') && (!fast || Date.now() - callStartMs < 4000)) {
       try {
         const out = await tryProvider('https://text.pollinations.ai/openai', {
           model: 'openai',
@@ -4575,7 +4925,7 @@ ${JSON.stringify(digest)}`,
           messages: cleanMessages,
           temperature: temp,
           ...(json ? { response_format: { type: 'json_object' } } : {})
-        }, fast ? 2400 : 4000);
+        }, fast ? 1200 : 3000);
         if (out) return out;
       } catch (_e) {
         coolProvider('pollinations', 180000);
@@ -4598,172 +4948,38 @@ ${JSON.stringify(digest)}`,
     );
   }
 
-  // High-throughput multi-engine internet search aggregator (scans 230+ websites in parallel)
+  // True multi-site internet search aggregator: Google Search Grounding + Bing RSS + DuckDuckGo HTML + Google News RSS + Wikipedia/Tech/Research
   app.post('/api/search', async (req, res) => {
     try {
       const query = String(req.body?.query || '').trim();
-      const targetLimit = Math.max(240, Math.min(Number(req.body?.limit) || 250, 350));
-      if (!query) return res.json({ results: [], scannedCount: 0 });
+      const targetLimit = Math.max(30, Math.min(Number(req.body?.limit) || 120, 300));
+      const fast = Boolean(req.body?.fast);
+      const deep = Boolean(req.body?.deep);
+      if (!query) return res.json({ results: [], sources: [], groundedAnswer: '', scannedCount: 0 });
 
-      const fjson = async (url: string, ms = 7500) => {
-        const ctl = new AbortController();
-        const t = setTimeout(() => ctl.abort(), ms);
-        try {
-          const r = await fetch(url, {
-            headers: { 'User-Agent': 'LokizenithResearchBot/4.0 (https://lokizenith.ai)' },
-            signal: ctl.signal
-          });
-          if (!r.ok) return null;
-          return await r.json();
-        } catch (_e) {
-          return null;
-        } finally {
-          clearTimeout(t);
-        }
-      };
-
-      const isHeb = /[\u0590-\u05FF]/.test(query);
-      const isAr = /[\u0600-\u06FF]/.test(query);
-      const wikiLang = isHeb ? 'he' : isAr ? 'ar' : 'en';
-      const qEnc = encodeURIComponent(query);
-
-      const [wikiMain, wikiEn, openAlex, crossref, hn, reddit, so, gh, wikidata, openlib] = await Promise.all([
-        fjson(`https://${wikiLang}.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=50&srsearch=${qEnc}`),
-        wikiLang !== 'en' ? fjson(`https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=40&srsearch=${qEnc}`) : Promise.resolve(null),
-        fjson(`https://api.openalex.org/works?per-page=50&search=${qEnc}`),
-        fjson(`https://api.crossref.org/works?rows=50&query=${qEnc}`),
-        fjson(`https://hn.algolia.com/api/v1/search?hitsPerPage=50&query=${qEnc}`),
-        fjson(`https://www.reddit.com/search.json?limit=50&sort=relevance&q=${qEnc}`),
-        fjson(`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&site=stackoverflow&pagesize=35&q=${qEnc}`),
-        fjson(`https://api.github.com/search/repositories?sort=stars&order=desc&per_page=35&q=${qEnc}`),
-        fjson(`https://www.wikidata.org/w/api.php?action=wbsearchentities&format=json&language=${wikiLang}&limit=35&search=${qEnc}`),
-        fjson(`https://openlibrary.org/search.json?limit=35&q=${qEnc}`)
-      ]);
-
-      const rawResults: Array<{ title: string; url: string; snippet: string; engine: string }> = [];
-
-      for (const it of (wikiMain?.query?.search || [])) {
-        rawResults.push({
-          title: it.title,
-          url: `https://${wikiLang}.wikipedia.org/wiki/${encodeURIComponent(String(it.title).replace(/ /g, '_'))}`,
-          snippet: String(it.snippet || '').replace(/<[^>]+>/g, ''),
-          engine: 'Wikipedia'
-        });
-      }
-      for (const it of (wikiEn?.query?.search || [])) {
-        rawResults.push({
-          title: it.title,
-          url: `https://en.wikipedia.org/wiki/${encodeURIComponent(String(it.title).replace(/ /g, '_'))}`,
-          snippet: String(it.snippet || '').replace(/<[^>]+>/g, ''),
-          engine: 'Wikipedia'
-        });
-      }
-      for (const w of (openAlex?.results || [])) {
-        const title = w.title || w.display_name;
-        const url = w.primary_location?.landing_page_url || w.doi || w.id;
-        if (title && url) {
-          rawResults.push({
-            title: `${title}${w.publication_year ? ` (${w.publication_year})` : ''}`,
-            url,
-            snippet: `${w.primary_location?.source?.display_name || 'OpenAlex Global Research'} · Cited by ${w.cited_by_count ?? 0}`,
-            engine: 'OpenAlex'
-          });
-        }
-      }
-      for (const it of (crossref?.message?.items || [])) {
-        const title = Array.isArray(it.title) ? it.title[0] : it.title;
-        const url = it.URL || (it.DOI ? `https://doi.org/${it.DOI}` : '');
-        if (title && url) {
-          const yr = it.issued?.['date-parts']?.[0]?.[0] || '';
-          rawResults.push({
-            title: `${title}${yr ? ` (${yr})` : ''}`,
-            url,
-            snippet: String(it.abstract || `${it.publisher || 'Crossref'} · ${it['container-title']?.[0] || 'Published Study'}`).replace(/<[^>]+>/g, ' ').slice(0, 220),
-            engine: 'Crossref'
-          });
-        }
-      }
-      for (const hit of (hn?.hits || [])) {
-        const title = hit.title || hit.story_title;
-        const url = hit.url || `https://news.ycombinator.com/item?id=${hit.objectID}`;
-        if (title) {
-          rawResults.push({
-            title,
-            url,
-            snippet: String(hit.story_text || hit.comment_text || `Points: ${hit.points || 0} · Comments: ${hit.num_comments || 0}`).replace(/<[^>]+>/g, ' ').slice(0, 220),
-            engine: 'HackerNews'
-          });
-        }
-      }
-      for (const c of (reddit?.data?.children || [])) {
-        const d = c.data;
-        if (d?.title) {
-          rawResults.push({
-            title: `${d.title} (r/${d.subreddit || 'all'})`,
-            url: d.permalink ? `https://www.reddit.com${d.permalink}` : d.url,
-            snippet: d.selftext ? String(d.selftext).replace(/\s+/g, ' ').slice(0, 220) : `r/${d.subreddit || 'all'} · ↑${d.score || 0} · ${d.num_comments || 0} comments`,
-            engine: 'Reddit'
-          });
-        }
-      }
-      for (const it of (so?.items || [])) {
-        if (it.link && it.title) {
-          rawResults.push({
-            title: it.title,
-            url: it.link,
-            snippet: `StackOverflow (${it.score || 0} votes, ${it.answer_count || 0} answers) · ${(it.tags || []).slice(0, 4).join(', ')}`,
-            engine: 'StackOverflow'
-          });
-        }
-      }
-      for (const repo of (gh?.items || [])) {
-        if (repo.html_url) {
-          rawResults.push({
-            title: repo.full_name,
-            url: repo.html_url,
-            snippet: `${repo.description || 'Repository'} · ★ ${repo.stargazers_count || 0}`,
-            engine: 'GitHub'
-          });
-        }
-      }
-      for (const it of (wikidata?.search || [])) {
-        const url = it.concepturi || (it.url ? `https:${it.url}` : '');
-        if (url) {
-          rawResults.push({
-            title: `${it.label || it.id} — Wikidata`,
-            url,
-            snippet: it.description || 'Structured Knowledge Entity',
-            engine: 'Wikidata'
-          });
-        }
-      }
-      for (const d of (openlib?.docs || [])) {
-        if (d.key && d.title) {
-          rawResults.push({
-            title: `${d.title}${d.first_publish_year ? ` (${d.first_publish_year})` : ''}`,
-            url: `https://openlibrary.org${d.key}`,
-            snippet: `Archive Record · ${Array.isArray(d.author_name) ? d.author_name.slice(0, 2).join(', ') : 'Reference'}`,
-            engine: 'OpenLibrary'
-          });
-        }
-      }
-
-      const verifiedSummary = verifyAndRankSources(rawResults, query);
+      const data = await runLiveMultiSiteWebSearch({
+        query,
+        limit: targetLimit,
+        fast,
+        deep,
+        includeGrounding: true,
+      });
 
       return res.json({
-        results: verifiedSummary.sources.slice(0, targetLimit),
-        scannedCount: rawResults.length,
-        uniqueCount: verifiedSummary.totalUnique,
-        avgTrust: verifiedSummary.avgTrust,
-        trustBreakdown: {
-          trustable: verifiedSummary.trustableCount,
-          reliable: verifiedSummary.reliableCount,
-          verify: verifiedSummary.verifyCount,
-          low: verifiedSummary.lowCount,
-        },
+        results: data.results,
+        sources: data.sources,
+        groundedAnswer: data.groundedAnswer,
+        queriesUsed: data.queriesUsed,
+        enginesUsed: data.enginesUsed,
+        scannedCount: data.scannedCount,
+        uniqueCount: data.uniqueCount,
+        distinctDomains: data.distinctDomains,
+        avgTrust: data.avgTrust,
+        trustBreakdown: data.trustBreakdown,
+        elapsedMs: data.elapsedMs,
       });
     } catch (e: any) {
-      return res.status(500).json({ error: e?.message || 'Search error', results: [] });
+      return res.status(500).json({ error: e?.message || 'Search error', results: [], sources: [], groundedAnswer: '' });
     }
   });
 
@@ -4779,11 +4995,10 @@ ${JSON.stringify(digest)}`,
       let sources = summary.sources;
       let aiVerdict = '';
 
-      // Optional fast AI plausibility & corroboration cross-check on top unique sources
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (apiKey && sources.length > 0 && (deepCheck || answer.length > 0)) {
+      // Optional fast AI plausibility & corroboration cross-check on top unique sources (Gemini pool -> full keyed chain incl. Groq)
+      const geminiSlots = getHotGeminiSlots();
+      if (sources.length > 0 && (deepCheck || answer.length > 0)) {
         try {
-          const ai = getGenAI(apiKey);
           const topSlice = sources.slice(0, 10);
           const srcLines = topSlice
             .map(
@@ -4804,38 +5019,60 @@ Return ONLY valid JSON:
   ]
 }
 Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 10-44 Low Trust).`;
-          const aiRes = await ai.models.generateContent({
-            model: 'gemini-4-hydrogen',
-            contents: [{ role: 'user', parts: [{ text: verifyPrompt }] }],
-            config: {
-              maxOutputTokens: 700,
-              responseMimeType: 'application/json',
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            },
-          });
-          const rawTxt = String(aiRes.text || '').trim();
-          const parsed = JSON.parse(rawTxt.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, ''));
-          if (parsed && typeof parsed === 'object') {
-            if (typeof parsed.verdict === 'string') aiVerdict = parsed.verdict.trim();
-            if (Array.isArray(parsed.adjustments)) {
-              for (const adj of parsed.adjustments) {
-                const idx = Number(adj?.index);
-                const aiScore = Number(adj?.score);
-                if (Number.isInteger(idx) && idx >= 0 && idx < topSlice.length && Number.isFinite(aiScore)) {
-                  const blended = Math.max(5, Math.min(99, Math.round(topSlice[idx].trustScore * 0.55 + aiScore * 0.45)));
-                  const meta = classifyTrustTier(blended);
-                  topSlice[idx] = {
-                    ...topSlice[idx],
-                    trustScore: blended,
-                    trustTier: meta.tier,
-                    trustLabel: meta.label,
-                    trustColor: meta.color,
-                    verified: blended >= 70,
-                    trustReason: typeof adj.reason === 'string' && adj.reason.trim() ? adj.reason.trim() : topSlice[idx].trustReason,
-                  };
+          let rawTxt = '';
+          for (const slot of geminiSlots) {
+            try {
+              const ai = getGenAI(slot.apiKey);
+              const aiRes = await ai.models.generateContent({
+                model: 'gemini-4-hydrogen',
+                contents: [{ role: 'user', parts: [{ text: verifyPrompt }] }],
+                config: {
+                  maxOutputTokens: 700,
+                  responseMimeType: 'application/json',
+                  thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+                },
+              });
+              rawTxt = String(aiRes.text || '').trim();
+              if (rawTxt) break;
+            } catch {
+              chainCooldowns.cool(slot.slotId, 30_000);
+            }
+          }
+          if (!rawTxt) {
+            const chainOut = await callKeyedAiChain({
+              messages: [{ role: 'user', content: verifyPrompt }],
+              maxTokens: 700,
+              temperature: 0.2,
+              json: true,
+              purpose: 'fast',
+              timeoutMs: 4500,
+            });
+            if (chainOut.ok) rawTxt = chainOut.text;
+          }
+          if (rawTxt) {
+            const parsed = JSON.parse(rawTxt.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, ''));
+            if (parsed && typeof parsed === 'object') {
+              if (typeof parsed.verdict === 'string') aiVerdict = parsed.verdict.trim();
+              if (Array.isArray(parsed.adjustments)) {
+                for (const adj of parsed.adjustments) {
+                  const idx = Number(adj?.index);
+                  const aiScore = Number(adj?.score);
+                  if (Number.isInteger(idx) && idx >= 0 && idx < topSlice.length && Number.isFinite(aiScore)) {
+                    const blended = Math.max(5, Math.min(99, Math.round(topSlice[idx].trustScore * 0.55 + aiScore * 0.45)));
+                    const meta = classifyTrustTier(blended);
+                    topSlice[idx] = {
+                      ...topSlice[idx],
+                      trustScore: blended,
+                      trustTier: meta.tier,
+                      trustLabel: meta.label,
+                      trustColor: meta.color,
+                      verified: blended >= 70,
+                      trustReason: typeof adj.reason === 'string' && adj.reason.trim() ? adj.reason.trim() : topSlice[idx].trustReason,
+                    };
+                  }
                 }
+                sources = [...topSlice, ...sources.slice(topSlice.length)].sort((a, b) => b.trustScore - a.trustScore);
               }
-              sources = [...topSlice, ...sources.slice(topSlice.length)].sort((a, b) => b.trustScore - a.trustScore);
             }
           }
         } catch (_aiVerifyErr) {}
@@ -5093,10 +5330,9 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
       const lang = String(req.body?.lang || '').trim();
       if (!audioB64) return res.status(400).json({ error: 'Missing audio' });
 
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (apiKey) {
+      for (const slot of getHotGeminiSlots()) {
         try {
-          const ai = getGenAI(apiKey);
+          const ai = getGenAI(slot.apiKey);
           const langHint = lang ? ` The speaker may be speaking ${lang}.` : '';
           const resp = await ai.models.generateContent({
             model: 'gemini-3.5-transcribe',
@@ -5109,7 +5345,15 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
           });
           const t = (resp.text || '').trim();
           if (t) return res.json({ text: t, provider: 'gemini-3.5-transcribe' });
-        } catch (_e) {}
+        } catch (_e) {
+          chainCooldowns.cool(slot.slotId, 30_000);
+        }
+      }
+
+      // Fallback 1: Groq Whisper Turbo key pool
+      const groqStt = await transcribeWithGroqWhisper({ audioB64, mime, lang });
+      if (groqStt.ok && groqStt.text) {
+        return res.json({ text: groqStt.text, provider: groqStt.provider || 'groq-whisper-large-v3-turbo' });
       }
 
       // Fallback: Kepler Whisper-large-v3-turbo multipart upload
@@ -5193,66 +5437,84 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
       const hasImage = contents.some((c: any) => c.parts.some((p: any) => p.inlineData)) ||
         (messages || []).some((m: any) => Array.isArray(m.content) && m.content.some((p: any) => p.type === 'image_url'));
 
+      const reqStartMs = Date.now();
+      const isUltraFast = Number(level) === 4 || mode === 'ultra';
+      const isFastChat = isTurbo || isUltraFast;
       let responseText = '';
-      const apiKey = process.env.GEMINI_API_KEY;
+      const platDirective = String(store.platformConfig?.globalAiDirective || '').trim();
+      const combinedSys =
+        (systemInstruction ? systemInstruction + '\n\n' : '') +
+        FOUNDER_KNOWLEDGE +
+        `\n\n${CLARITY_AND_STRUCTURE_RULE}` +
+        (platDirective ? `\n\n[PLATFORM ADMIN DIRECTIVE: ${platDirective}]` : '');
+      const maxTok = Math.min(Math.max(Number(maxTokens) || 2048, 100), 8192);
 
-      if (apiKey) {
-        const ai = getGenAI(apiKey);
-        const isUltraFast = Number(level) === 4 || mode === 'ultra';
-        const thinkingLvl = isTurbo || isUltraFast
-          ? ThinkingLevel.LOW
-          : Number(level) >= 3
-            ? ThinkingLevel.HIGH
-            : ThinkingLevel.LOW;
-        const platDirective = String(store.platformConfig?.globalAiDirective || '').trim();
-        const combinedSys =
-          (systemInstruction ? systemInstruction + '\n\n' : '') +
-          FOUNDER_KNOWLEDGE +
-          (platDirective ? `\n\n[PLATFORM ADMIN DIRECTIVE: ${platDirective}]` : '') +
-          '\n\n[FORMATTING RULE: When asked for a table or when presenting structured comparisons or word/letter lists, ALWAYS format directly in text using standard Markdown tables (| Col 1 | Col 2 |). NEVER wrap tabular text in code blocks or output raw JSON arrays for tables.]';
-        const maxTok = Math.min(Math.max(Number(maxTokens) || 2048, 100), 8192);
-        try {
-          const h4Config: any = {
-            maxOutputTokens: maxTok,
-            thinkingConfig: { thinkingLevel: thinkingLvl },
-            systemInstruction: combinedSys,
-          };
-          if (json) h4Config.responseMimeType = 'application/json';
-          const response = await ai.models.generateContent({
-            model: 'gemini-4-hydrogen',
-            contents,
-            config: h4Config,
-          });
-          responseText = response.text || '';
-        } catch (_h4Err: any) {
+      // 1. For non-image text/JSON requests, run the sub-250ms Keyed Chain (Groq 2 keys -> Codestral -> Cerebras -> Mistral) FIRST
+      if (!hasImage) {
+        const fastKeyed = await callKeyedAiChain({
+          messages: [
+            { role: 'system', content: combinedSys },
+            ...(messages || []).filter((m: any) => m.role !== 'system'),
+          ],
+          maxTokens: maxTok,
+          temperature,
+          json: Boolean(json),
+          purpose: isFastChat ? 'fast' : 'quality',
+          timeoutMs: isFastChat ? 2500 : 4200,
+        });
+        if (fastKeyed.ok && fastKeyed.text) {
+          responseText = fastKeyed.text;
+        }
+      }
+
+      // 2. Gemini Pool (primary for multimodal images, instant fallback for text/JSON via gemini-3-flash-preview)
+      const geminiSlots = !responseText ? getHotGeminiSlots() : [];
+      if (geminiSlots.length) {
+        const stepTimeoutMs = isFastChat ? 2200 : 3800;
+        const callGenDeadline = (ai: GoogleGenAI, model: string, cfg: any, ms: number) => {
+          const ctl = new AbortController();
+          return Promise.race([
+            ai.models.generateContent({ model, contents, config: { ...cfg, abortSignal: ctl.signal } }),
+            new Promise<never>((_, rej) => setTimeout(() => { try { ctl.abort(); } catch {} rej(new Error('chat_gemini_timeout')); }, ms)),
+          ]);
+        };
+
+        for (const slot of geminiSlots) {
+          if (isFastChat && Date.now() - reqStartMs >= 3600) break;
+          const ai = getGenAI(slot.apiKey);
           try {
-            const g3Config: any = {
+            const primaryConfig: any = {
               maxOutputTokens: maxTok,
-              thinkingConfig: { thinkingLevel: thinkingLvl },
+              thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
               systemInstruction: combinedSys,
             };
-            if (json) g3Config.responseMimeType = 'application/json';
-            const response = await ai.models.generateContent({
-              model: 'gemini-3-flash-preview',
-              contents,
-              config: g3Config,
-            });
+            if (json) primaryConfig.responseMimeType = 'application/json';
+            const response = await callGenDeadline(ai, 'gemini-3-flash-preview', primaryConfig, stepTimeoutMs);
             responseText = response.text || '';
-          } catch (_geminiErr: any) {
-            // Quota reached or key error; proceed to vision or live AI cluster
+            if (responseText) break;
+          } catch (_primaryErr: any) {
+            coolGeminiSlotFromError(slot.slotId, _primaryErr, 180_000);
           }
         }
       }
 
       if (!responseText) {
         if (hasImage) {
-          responseText = await callVisionAI(messages || [], temperature, maxTokens);
+          const visionChain = await callKeyedAiChain({
+            messages: messages || [],
+            systemInstruction: `${FOUNDER_KNOWLEDGE}\n\n${CLARITY_AND_STRUCTURE_RULE}`,
+            maxTokens,
+            temperature,
+            purpose: 'vision',
+            timeoutMs: isFastChat ? 3200 : 8000,
+          });
+          responseText = visionChain.ok ? visionChain.text : await callVisionAI(messages || [], temperature, maxTokens);
         } else {
           const enrichedMessages = [
-            { role: 'system', content: FOUNDER_KNOWLEDGE },
+            { role: 'system', content: `${FOUNDER_KNOWLEDGE}\n\n${CLARITY_AND_STRUCTURE_RULE}` },
             ...(messages || []),
           ];
-          responseText = await callLiveAI(enrichedMessages, temperature, maxTokens, json, isTurbo);
+          responseText = await callLiveAI(enrichedMessages, temperature, maxTokens, json, isFastChat);
         }
       }
 
@@ -5339,74 +5601,145 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
         }
       }
       if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
+      const lastUserContent = [...messages]
+        .reverse()
+        .find((m: any) => m.role === 'user')?.content;
+      const lastUserText = Array.isArray(lastUserContent)
+        ? lastUserContent.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
+        : String(lastUserContent || '');
+      const isLslChat = detectLslIntent(lastUserText);
+
+      const routePlan = planFastChatRoute({
+        level: Number(level),
+        mode: String(mode || 'auto'),
+        answerLength: typeof answerLength === 'string' ? answerLength : 'medium',
+        maxTokens: Number(maxTokens) || 4096,
+        isLslChat,
+        userText: lastUserText,
+      });
+
       const platDirective = String(store.platformConfig?.globalAiDirective || '').trim();
       const lengthDirective = answerLength ? `\n\n[${buildAnswerLengthInstruction(answerLength)}]` : '';
-      const ultraDirective = isUltra
-        ? '\n\n[ULTRA HYPER-PRECISION MODE: Answer immediately with zero preamble, zero filler intros ("Sure!", "Great question!"), razor-sharp accuracy, structured clarity, and concrete verifiable details. Be tighter, faster, and smarter than standard replies.]'
-        : '';
+      const lslDirective = isLslChat ? `\n\n${buildChatLslDirective()}` : '';
+      const speedDirective = buildFastSpeedDirective({
+        level: Number(level),
+        mode: String(mode || 'auto'),
+        answerLength: typeof answerLength === 'string' ? answerLength : 'medium',
+        isLslChat,
+        userText: lastUserText,
+      });
       const fullSys =
         (systemInstruction ? systemInstruction + '\n\n' : '') +
         FOUNDER_KNOWLEDGE +
+        `\n\n${CLARITY_AND_STRUCTURE_RULE}` +
         lengthDirective +
-        ultraDirective +
+        lslDirective +
+        speedDirective +
         (platDirective ? `\n\n[PLATFORM ADMIN DIRECTIVE: ${platDirective}]` : '');
 
-      // 1. Parallel Gemini Stream Race (gemini-3.1-flash-lite + gemini-4-hydrogen — first real token wins!)
-      const apiKey = process.env.GEMINI_API_KEY;
+      const reqStartMs = Date.now();
       let sentAny = false;
-      if (apiKey) {
-        const maxOut = Math.min(Math.max(Number(maxTokens) || 4096, 200), 8192);
-        const okGem = await raceGeminiStreams(
-          apiKey,
-          contents,
-          fullSys,
-          maxOut,
-          (t) => {
+      const hasInlineMedia = contents.some((c: any) => Array.isArray(c.parts) && c.parts.some((p: any) => p.inlineData));
+      const cleanMessages = [
+        { role: 'system', content: fullSys },
+        ...messages
+          .filter((m: any) => m.role !== 'system')
+          .map((m: any) => ({
+            role: m.role,
+            content: Array.isArray(m.content)
+              ? m.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
+              : String(m.content || ''),
+          })),
+      ];
+
+      // 1. Sub-250ms Keyed Streaming Chain FIRST for text requests (Groq 2 keys -> Codestral -> Cerebras -> Mistral)
+      if (!hasInlineMedia) {
+        const keyedStreamRes = await streamKeyedAiChain({
+          messages: cleanMessages,
+          maxTokens: routePlan.maxOutputTokens,
+          temperature: Number(temperature) || 0.25,
+          purpose: routePlan.isUltra ? 'quality' : routePlan.isTurbo ? 'fast' : 'quality',
+          firstTokenTimeoutMs: routePlan.isFastMode ? 2200 : 2800,
+          totalTimeoutMs: routePlan.isFastMode ? 12_000 : 22_000,
+          onDelta: (t) => {
             sentAny = true;
             writeChunk(t);
           },
-          { preferLite: isUltra || isTurbo, firstTokenTimeoutMs: isUltra ? 3800 : 5000 }
-        );
-        if (okGem || sentAny) {
+        });
+        if (keyedStreamRes.ok || sentAny) {
           finishStream();
           return;
         }
       }
 
-      // 2. Parallel Kepler OVH Stream Race (2.8s first-token deadline + 60s circuit breaker — ZERO 30s sequential stalls!)
-      const cleanMessages = [
-        { role: 'system', content: FOUNDER_KNOWLEDGE },
-        ...messages.map((m: any) => ({
-          role: m.role,
-          content: Array.isArray(m.content)
-            ? m.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
-            : String(m.content || ''),
-        })),
-      ];
-      const okOvh = await raceOvhStreams(
-        cleanMessages,
-        Math.min(Number(maxTokens) || 4096, 4096),
-        Number(temperature) || 0.25,
-        (t) => {
-          sentAny = true;
-          writeChunk(t);
-        },
-        2800
-      );
-      if (okOvh || sentAny) {
-        finishStream();
-        return;
+      // 2. Hedged Gemini Multi-Key Pool (gemini-3-flash-preview ~600ms TTFT)
+      const geminiSlots = getHotGeminiSlots();
+      for (const slot of geminiSlots) {
+        if (routePlan.isFastMode && Date.now() - reqStartMs >= 3800) break;
+        const okGem = await raceGeminiStreams(
+          slot.apiKey,
+          contents,
+          fullSys,
+          routePlan.maxOutputTokens,
+          (t) => {
+            sentAny = true;
+            writeChunk(t);
+          },
+          {
+            slotId: slot.slotId,
+            preferQuality: routePlan.preferQuality,
+            preferLite: routePlan.isFastMode,
+            primaryModel: 'gemini-3-flash-preview',
+            primaryThinking: 'MINIMAL',
+            secondaryModel: 'gemini-3.1-flash-lite',
+            secondaryThinking: 'MINIMAL',
+            hedgeDelayMs: 1100,
+            firstTokenTimeoutMs: 2800,
+            errorCooldownMs: 30_000,
+            thinkingLevel: ThinkingLevel.MINIMAL,
+          }
+        );
+        if (okGem || sentAny) {
+          finishStream();
+          return;
+        }
+        if (chainCooldowns.isHot(slot.slotId)) {
+          chainCooldowns.cool(slot.slotId, 180_000);
+        }
       }
 
-      // 3. Non-streaming live AI cluster fallback before synthesis fallback (stream word chunks progressively)
-      const liveText = await callLiveAI(cleanMessages, temperature, maxTokens, false, isTurbo);
+      // 3. Parallel Kepler OVH Stream Race (skip if Turbo/Ultra fast-mode budget is nearly up)
+      if (!routePlan.isFastMode || Date.now() - reqStartMs < 3600) {
+        const okOvh = await raceOvhStreams(
+          cleanMessages,
+          Math.min(routePlan.maxOutputTokens, 4096),
+          Number(temperature) || 0.25,
+          (t) => {
+            sentAny = true;
+            writeChunk(t);
+          },
+          routePlan.ovhTimeoutMs
+        );
+        if (okOvh || sentAny) {
+          finishStream();
+          return;
+        }
+      }
+
+      // 4. Non-streaming live AI cluster fallback before synthesis fallback (respects 1-5s budget in Turbo/Ultra)
+      const liveText =
+        !routePlan.isFastMode || Date.now() - reqStartMs < 3800
+          ? await callLiveAI(cleanMessages, temperature, routePlan.maxOutputTokens, false, routePlan.isFastMode)
+          : '';
       const finalText = liveText || synthesizeFallback(messages, systemInstruction, false);
       const tokens = finalText.match(/\S+\s*/g) || [finalText];
-      const wordsPerChunk = Math.max(1, Math.min(4, Math.ceil(tokens.length / 45)));
+      const wordsPerChunk = Math.max(3, Math.ceil(tokens.length / 24));
       for (let i = 0; i < tokens.length; i += wordsPerChunk) {
         if (res.writableEnded) break;
         writeChunk(tokens.slice(i, i + wordsPerChunk).join(''));
-        await new Promise((r) => setTimeout(r, 14));
+        if (i + wordsPerChunk < tokens.length) {
+          await new Promise((r) => setTimeout(r, 4));
+        }
       }
       finishStream();
     } catch (_e) {
@@ -5425,43 +5758,61 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
         return res.status(enforce.status).json(enforce.body);
       }
       const { messages, temperature = 0.4, maxTokens = 2048 } = req.body;
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (apiKey) {
-        try {
-          const ai = getGenAI(apiKey);
-          const contents: any[] = [];
-          for (const m of messages || []) {
-            const role = m.role === 'assistant' ? 'model' : 'user';
-            const parts: any[] = [];
-            if (Array.isArray(m.content)) {
-              for (const p of m.content) {
-                if (p.type === 'text') parts.push({ text: p.text });
-                else if (p.type === 'image_url' && p.image_url?.url) {
-                  const match = p.image_url.url.match(/^data:(image\/[\w+.-]+);base64,(.+)$/);
-                  if (match) parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
-                }
+      const geminiSlots = getHotGeminiSlots();
+      if (geminiSlots.length) {
+        const contents: any[] = [];
+        for (const m of messages || []) {
+          const role = m.role === 'assistant' ? 'model' : 'user';
+          const parts: any[] = [];
+          if (Array.isArray(m.content)) {
+            for (const p of m.content) {
+              if (p.type === 'text') parts.push({ text: p.text });
+              else if (p.type === 'image_url' && p.image_url?.url) {
+                const match = p.image_url.url.match(/^data:(image\/[\w+.-]+);base64,(.+)$/);
+                if (match) parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
               }
-            } else parts.push({ text: String(m.content || '') });
-            if (parts.length) contents.push({ role, parts });
+            }
+          } else parts.push({ text: String(m.content || '') });
+          if (parts.length) contents.push({ role, parts });
+        }
+        for (const slot of geminiSlots) {
+          try {
+            const ai = getGenAI(slot.apiKey);
+            const response = await ai.models.generateContent({
+              model: 'gemini-3-flash-preview',
+              contents,
+              config: {
+                maxOutputTokens: maxTokens,
+                systemInstruction: FOUNDER_KNOWLEDGE,
+                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              },
+            });
+            if (response.text) return res.json({ text: response.text });
+          } catch (_e) {
+            coolGeminiSlotFromError(slot.slotId, _e);
           }
-          const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents,
-            config: {
-              maxOutputTokens: maxTokens,
-              systemInstruction: FOUNDER_KNOWLEDGE,
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            },
-          });
-          if (response.text) return res.json({ text: response.text });
-        } catch (_e) {}
+        }
       }
+      const visionChain = await callKeyedAiChain({
+        messages: messages || [],
+        systemInstruction: FOUNDER_KNOWLEDGE,
+        maxTokens,
+        temperature,
+        purpose: 'vision',
+        timeoutMs: 8500,
+      });
+      if (visionChain.ok && visionChain.text) return res.json({ text: visionChain.text });
       const text = await callVisionAI(messages || [], temperature, maxTokens);
       if (text) return res.json({ text });
       return res.status(500).json({ error: 'Vision failed' });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || 'Vision error' });
     }
+  });
+
+  // Read-only non-secret summary of configured AI providers & key slots in the chain
+  app.get('/api/providers/chain', (_req, res) => {
+    return res.json({ ok: true, ...getConfiguredKeyChainSummary() });
   });
 
   // Multi-Provider Free Image Generation endpoint (Gemini -> Kepler SDXL -> Pollinations FLUX/Schnell/Dev)
@@ -5580,8 +5931,10 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
     }
   });
 
-  // Single-Roundtrip Turbo LokiCode Multimodal Streaming Endpoint (handles quota check, LSL specialist prompts & attached screenshots)
-  app.post('/api/lokicode/stream', async (req, res) => {
+  // Single-Roundtrip Turbo LokiCode Multimodal Streaming & Generation Endpoint
+  // Enforces LokiCode AI Skill, routes Groq -> Codestral -> Gemini -> Coding Chain -> Vision/OVH -> Deterministic,
+  // runs up to 2 compiler-driven auto-fix rounds, and emits provider + model + elapsedMs telemetry.
+  const lokiCodeStreamHandler = async (req: express.Request, res: express.Response) => {
     const authUser = getAuthUser(req);
     const enforce = enforceServerFeatureQuota(authUser, null, req.body?.turnId);
     if (!enforce.ok) {
@@ -5620,24 +5973,61 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
+    const reqStartMs = Date.now();
+    const providerDisplayNames: Record<string, string> = {
+      groq: 'Groq',
+      codestral: 'Codestral',
+      gemini: 'Google Gemini',
+      sambanova: 'SambaNova',
+      mistral: 'Mistral',
+      openrouter: 'OpenRouter',
+      cerebras: 'Cerebras',
+      together: 'Together.ai',
+      fireworks: 'Fireworks AI',
+      openai: 'OpenAI',
+      deepseek: 'DeepSeek',
+      xai: 'xAI Grok',
+      nvidia: 'NVIDIA NIM',
+      anthropic: 'Anthropic Claude',
+      'ovh-kepler': 'OVH Kepler',
+      offline: 'LokiCode Offline Compiler',
+      cache: 'LokiCode Cache',
+    };
+    let usedProviderId: ChainProviderId | 'gemini' | 'ovh-kepler' | 'offline' | 'cache' = 'groq';
+    let usedProvider = 'Groq';
+    let usedModel = '';
+
+    const setUsedSource = (id: ChainProviderId | 'gemini' | 'ovh-kepler' | 'offline' | 'cache', model = '') => {
+      usedProviderId = id;
+      usedProvider = providerDisplayNames[id] || id;
+      usedModel = model || usedModel;
+    };
+
     const writeChunk = (delta: string) => {
-      if (!delta) return;
+      if (!delta || res.writableEnded) return;
       res.write(`data: ${JSON.stringify({ delta })}\n\n`);
     };
-    const finishStream = () => {
-      res.write('data: [DONE]\n\n');
-      res.end();
+    const streamProgressively = async (fullText: string) => {
+      if (!fullText) return;
+      const chunkSize = Math.max(36, Math.min(96, Math.ceil(fullText.length / 45)));
+      for (let i = 0; i < fullText.length; i += chunkSize) {
+        if (res.writableEnded) break;
+        writeChunk(fullText.slice(i, i + chunkSize));
+        await new Promise((r) => setTimeout(r, 8));
+      }
     };
 
-    if (trackedAccount) {
-      res.write(`data: ${JSON.stringify({ account: trackedAccount })}\n\n`);
-    }
-
     const langId = String(req.body?.lang || 'python').toLowerCase().trim() || 'python';
-    const modeId: 'new' | 'edit' = req.body?.mode === 'edit' ? 'edit' : 'new';
+    const rawPreviousCode = String(req.body?.previousCode || req.body?.code || '').slice(0, 60000);
+    const reqErrors = Array.isArray(req.body?.errors)
+      ? req.body.errors.map((e: any) => String(e || '').trim()).filter(Boolean).slice(0, 12)
+      : [];
+    const modeId: 'new' | 'edit' =
+      req.body?.mode === 'edit' || (req.body?.mode !== 'new' && (rawPreviousCode.trim().length > 0 || reqErrors.length > 0))
+        ? 'edit'
+        : 'new';
     const comments = req.body?.comments !== false;
     const rawPrompt = String(req.body?.prompt || '').trim();
-    const previousCode = String(req.body?.previousCode || '').slice(0, 60000);
     const rawImages = Array.isArray(req.body?.images) ? req.body.images : [];
 
     const parsedImages: Array<{ mimeType: string; data: string; dataUrl: string }> = [];
@@ -5649,17 +6039,33 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
       }
     }
 
-    const effectivePrompt = buildImageAwarePromptText(rawPrompt, langId, parsedImages.length > 0, modeId);
-    const systemInstruction = buildFastLokiCodePrompt(langId, {
+    const effectivePrompt =
+      buildImageAwarePromptText(rawPrompt, langId, parsedImages.length > 0, modeId) ||
+      (reqErrors.length ? `Fix the listed ${langId.toUpperCase()} compiler errors.` : '');
+    const routePlan = planLokiCodeRoute(langId, {
+      hasImages: parsedImages.length > 0,
+      mode: modeId,
+      promptLength: effectivePrompt.length,
+    });
+    const skillPrompt = buildLokiCodeSkillSystemPrompt({
+      langId,
       mode: modeId,
       comments,
       hasImages: parsedImages.length > 0,
     });
+    const extraLangSpec =
+      langId === 'lsl'
+        ? '\n\nARCHITECTURE: Use a unique key-derived negative dialog channel (-1 - (integer)("0x" + llGetSubString((string)llGetKey(), 0, 6))), call llListenRemove before llListen, and reset cleanly in on_rez and changed(CHANGED_OWNER).\nCRITICAL LSL2/MONO COMPILER RULES: (1) Declare ALL user helper functions at global scope BEFORE `default {` — NEVER define helper functions inside `default { ... }`. (2) NEVER use `break;`, `continue;`, `switch/case`, or ternary `? :` — LSL2/Mono has no break/continue keywords (use a loop flag variable or early `return;` instead).'
+        : langId === 'matlab'
+          ? `\n\n${buildFastLokiCodePrompt('matlab', { mode: modeId, comments, hasImages: parsedImages.length > 0 })}`
+          : '';
+    const systemInstruction = `${skillPrompt}${extraLangSpec}`;
 
+    const errorsSection = reqErrors.length ? `\n\nREPORTED ERRORS TO FIX:\n${reqErrors.join('\n')}` : '';
     const userText =
-      modeId === 'edit' && previousCode.trim()
-        ? `EXISTING ${langId.toUpperCase()} CODE:\n\`\`\`${langId}\n${previousCode}\n\`\`\`\n\nEDIT REQUEST: ${effectivePrompt}\nOutput ONLY the complete updated fenced code block.`
-        : `BUILD REQUEST (${langId.toUpperCase()}): ${effectivePrompt}`;
+      modeId === 'edit' && rawPreviousCode.trim()
+        ? `EXISTING ${langId.toUpperCase()} CODE:\n\`\`\`${langId}\n${rawPreviousCode}\n\`\`\`${errorsSection}\n\nEDIT REQUEST: ${effectivePrompt}\nOutput ONLY a single complete updated \`\`\`${langId} ... \`\`\` fenced code block.`
+        : `BUILD REQUEST (${langId.toUpperCase()}): ${effectivePrompt}${errorsSection}`;
 
     const userParts: any[] = [{ text: userText }];
     for (const img of parsedImages) {
@@ -5670,8 +6076,8 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
     let sentAny = false;
     let streamedAcc = '';
     const cacheKey =
-      parsedImages.length === 0
-        ? `${langId}|${modeId}|${comments ? 1 : 0}|${effectivePrompt.toLowerCase().replace(/\s+/g, ' ').slice(0, 260)}|${previousCode.length}:${previousCode.slice(0, 80)}`
+      parsedImages.length === 0 && reqErrors.length === 0
+        ? `${langId}|${modeId}|${comments ? 1 : 0}|${effectivePrompt.toLowerCase().replace(/\s+/g, ' ').slice(0, 260)}|${rawPreviousCode.length}:${rawPreviousCode.slice(0, 80)}`
         : '';
 
     const synthesizeInstantSpecialist = (): string => {
@@ -5680,27 +6086,246 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
       return generateComprehensiveCode(effectivePrompt, `language selected by user: ${langId}`);
     };
 
+    const verifyAndRepairStreamOutput = async (rawOut: string): Promise<string> => {
+      if (!rawOut.trim() || res.writableEnded) return rawOut;
+      let audit = verifyGeneratedCodeFast(langId, rawOut);
+      let fixPasses = audit.fixes.length ? 1 : 0;
+
+      // At most 1 fast compiler-driven auto-fix round if within the interactive latency budget (<4.8s),
+      // so the SSE stream never stalls past the client's 6.5s chunk watchdog.
+      for (let fixRound = 1; fixRound <= 1 && !audit.ok && audit.errors.length > 0 && audit.code && (Date.now() - reqStartMs < 4800); fixRound++) {
+        try {
+          const repairPrompt = [
+            `Auto-fix round ${fixRound}/1: Fix EVERY compiler/syntax error in this ${langId.toUpperCase()} code without removing requested features.`,
+            `ERRORS:\n${audit.errors.slice(0, 10).join('\n')}`,
+            `CODE:\n\`\`\`${langId}\n${audit.code}\n\`\`\``,
+            `Output ONLY the single corrected \`\`\`${langId} ... \`\`\` fenced code block.`,
+          ].join('\n\n');
+          let repairedText = '';
+
+          // 1. Prefer the same healthy chain provider if applicable
+          const chainIds: ChainProviderId[] = [
+            'groq',
+            'codestral',
+            'cerebras',
+            'sambanova',
+            'mistral',
+            'openrouter',
+            'together',
+            'fireworks',
+            'openai',
+            'deepseek',
+            'xai',
+            'nvidia',
+            'anthropic',
+          ];
+          if (chainIds.includes(usedProviderId as ChainProviderId)) {
+            const sameProviderFix = await callKeyedAiChain({
+              messages: [
+                { role: 'system', content: systemInstruction },
+                { role: 'user', content: repairPrompt },
+              ],
+              onlyProviders: [usedProviderId as ChainProviderId],
+              maxTokens: routePlan.repairMaxTokens,
+              temperature: 0.1,
+              purpose: 'code',
+              timeoutMs: 2200,
+            });
+            if (sameProviderFix.ok && sameProviderFix.text) repairedText = sameProviderFix.text;
+          }
+
+          // 2. Gemini pool next (or primary for Gemini / vision generations)
+          if (!repairedText) {
+            for (const gSlot of getHotGeminiSlots()) {
+              try {
+                const ai = getGenAI(gSlot.apiKey);
+                const repairPromise = ai.models.generateContent({
+                  model: 'gemini-3.1-flash-lite',
+                  contents: [{ role: 'user', parts: [{ text: repairPrompt }] }],
+                  config: {
+                    maxOutputTokens: routePlan.repairMaxTokens,
+                    systemInstruction,
+                    thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+                  },
+                });
+                const repairResp = await Promise.race([
+                  repairPromise,
+                  new Promise<null>((resolve) => setTimeout(() => resolve(null), routePlan.repairTimeoutMs + 600)),
+                ]);
+                repairedText = String((repairResp as any)?.text || '').trim();
+                if (repairedText) break;
+              } catch (gErr) {
+                coolGeminiSlotFromError(gSlot.slotId, gErr);
+              }
+            }
+          }
+
+          // 3. Remaining keyed coding chain fallback
+          if (!repairedText) {
+            const chainRepair = await callKeyedAiChain({
+              messages: [
+                { role: 'system', content: systemInstruction },
+                { role: 'user', content: repairPrompt },
+              ],
+              maxTokens: routePlan.repairMaxTokens,
+              temperature: 0.1,
+              purpose: 'code',
+              timeoutMs: routePlan.repairTimeoutMs + 900,
+            });
+            if (chainRepair.ok && chainRepair.text) repairedText = chainRepair.text;
+          }
+
+          if (!repairedText) break;
+          const reAudit = verifyGeneratedCodeFast(langId, repairedText);
+          if (reAudit.ok || reAudit.errors.length < audit.errors.length || (reAudit.code && reAudit.code !== audit.code)) {
+            audit = {
+              ...reAudit,
+              fixes: [...audit.fixes, ...reAudit.fixes, `Auto-repaired errors (pass ${fixRound})`],
+            };
+            fixPasses += 1;
+          } else {
+            break;
+          }
+        } catch {
+          break;
+        }
+      }
+
+      const elapsedMs = Math.max(1, Date.now() - reqStartMs);
+      const modelLabel = usedModel || 'auto';
+      console.log(`[LokiCode] lang=${langId} provider=${usedProvider} model=${modelLabel} elapsedMs=${elapsedMs} ok=${audit.ok} fixes=${fixPasses}`);
+
+      const verifiedFence = '```' + langId + '\n' + audit.code + '\n```';
+      if (fixPasses > 0 && audit.code) {
+        res.write(`data: ${JSON.stringify({ reset: verifiedFence })}\n\n`);
+      }
+      res.write(
+        `data: ${JSON.stringify({
+          meta: {
+            provider: usedProvider,
+            providerId: usedProviderId,
+            model: modelLabel,
+            elapsedMs,
+            lang: langId,
+          },
+        })}\n\n`
+      );
+      res.write(
+        `data: ${JSON.stringify({
+          verify: {
+            ok: audit.ok,
+            lang: audit.lang,
+            compiler: audit.compiler,
+            errors: audit.errors,
+            warnings: audit.warnings,
+            fixes: audit.fixes,
+            fixPasses,
+            verifyMs: audit.verifyMs,
+            provider: usedProvider,
+            model: modelLabel,
+            elapsedMs,
+          },
+        })}\n\n`
+      );
+      return verifiedFence;
+    };
+
+    const finishStream = () => {
+      if (res.writableEnded) return;
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
+
+    if (trackedAccount) {
+      res.write(`data: ${JSON.stringify({ account: trackedAccount })}\n\n`);
+    }
+
     try {
-      // Groq first when GROQ_API_KEY is set. A missing key, a 429, or an empty
-      // response falls through to the existing Gemini path with no client notice.
-      const groqPlan = planGroqAttempt();
-      if (groqPlan.action === 'request' && parsedImages.length === 0) {
-        const groqOut = await streamGroqGuarded({
-          apiKey: String(process.env.GROQ_API_KEY || ''),
-          model: groqPlan.model,
-          maxTokens: langId === 'lsl' ? 8000 : 5120,
+      // 0. Instant LRU cache hit FIRST — streamed smoothly
+      if (cacheKey) {
+        const cached = getLokiCodeCached(cacheKey);
+        if (cached) {
+          setUsedSource('cache', 'cached-verified');
+          await streamProgressively(cached);
+          await verifyAndRepairStreamOutput(cached);
+          finishStream();
+          return;
+        }
+      }
+
+      // 1. Groq Multi-Key Pool first (GROQ_API_KEY, GROQ_API_KEY_2..10, GROQ_API_KEYS)
+      const groqKeys = collectProviderKeys('groq');
+      if (groqKeys.length && parsedImages.length === 0) {
+        const hotGroqSlots = chainCooldowns.orderHotSlots('groq', groqKeys, 'Groq');
+        for (const slot of hotGroqSlots) {
+          const groqCtl = new AbortController();
+          let groqFirstTokenTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+            () => groqCtl.abort(),
+            routePlan.groqTimeoutMs
+          );
+          const groqHardTimer = setTimeout(() => groqCtl.abort(), routePlan.groqHardTimeoutMs);
+          try {
+            const groqOut = await streamGroqGuarded({
+              apiKey: slot.apiKey,
+              maxTokens: routePlan.maxOutputTokens,
+              reasoningEffort: routePlan.groqReasoningEffort,
+              signal: groqCtl.signal,
+              messages: [
+                { role: 'system', content: systemInstruction },
+                { role: 'user', content: userText },
+              ],
+              onDelta: (t) => {
+                if (groqFirstTokenTimer) {
+                  clearTimeout(groqFirstTokenTimer);
+                  groqFirstTokenTimer = null;
+                }
+                sentAny = true;
+                streamedAcc += t;
+                writeChunk(t);
+              },
+            });
+            if (groqOut.ok || sentAny) {
+              setUsedSource('groq', groqOut.model || 'openai/gpt-oss-120b');
+              const finalOut = await verifyAndRepairStreamOutput(streamedAcc);
+              if (cacheKey && finalOut.length > 20) setLokiCodeCached(cacheKey, finalOut);
+              finishStream();
+              return;
+            }
+            if (groqOut.status) {
+              chainCooldowns.coolForHttpStatus(slot.slotId, groqOut.status);
+            }
+          } finally {
+            if (groqFirstTokenTimer) clearTimeout(groqFirstTokenTimer);
+            clearTimeout(groqHardTimer);
+          }
+          sentAny = false;
+          streamedAcc = '';
+        }
+      }
+
+      // 2. Codestral Dedicated Endpoint (https://codestral.mistral.ai/v1/chat/completions)
+      if (parsedImages.length === 0) {
+        const codestralOut = await streamKeyedAiChain({
           messages: [
             { role: 'system', content: systemInstruction },
             { role: 'user', content: userText },
           ],
+          maxTokens: routePlan.maxOutputTokens,
+          temperature: 0.15,
+          purpose: 'code',
+          onlyProviders: ['codestral'],
+          firstTokenTimeoutMs: 3600,
+          totalTimeoutMs: 9500,
           onDelta: (t) => {
             sentAny = true;
             streamedAcc += t;
             writeChunk(t);
           },
         });
-        if (groqOut.ok || sentAny) {
-          if (cacheKey && streamedAcc.length > 20) setLokiCodeCached(cacheKey, streamedAcc);
+        if (codestralOut.ok || sentAny) {
+          setUsedSource('codestral', codestralOut.model || 'codestral-latest');
+          const finalOut = await verifyAndRepairStreamOutput(streamedAcc);
+          if (cacheKey && finalOut.length > 20) setLokiCodeCached(cacheKey, finalOut);
           finishStream();
           return;
         }
@@ -5708,139 +6333,180 @@ Keep scores realistic (90-99 Trustable, 70-89 Reliable, 45-69 Verify Carefully, 
         streamedAcc = '';
       }
 
-      // 0. Sub-5ms LRU cache hit for repeated prompts (zero upstream wait)
-      if (cacheKey) {
-        const cached = getLokiCodeCached(cacheKey);
-        if (cached) {
-          const step = Math.max(220, Math.ceil(cached.length / 8));
-          for (let i = 0; i < cached.length; i += step) {
-            writeChunk(cached.slice(i, i + step));
-          }
-          finishStream();
-          return;
-        }
-      }
-
-      const apiKey = process.env.GEMINI_API_KEY;
-      const isTurboSpecialist = langId === 'lsl' || langId === 'matlab';
-      const maxOutTokens = isTurboSpecialist ? 2600 : 5120;
-      if (apiKey) {
+      // 3. Hedged Fast Gemini Multi-Key Pool
+      const geminiSlots = getHotGeminiSlots();
+      for (const slot of geminiSlots) {
+        let wonGeminiModel = routePlan.primaryModel;
         const okGem = await raceGeminiStreams(
-          apiKey,
+          slot.apiKey,
           gemContents,
           systemInstruction,
-          maxOutTokens,
+          routePlan.maxOutputTokens,
           (t) => {
             sentAny = true;
             streamedAcc += t;
             writeChunk(t);
           },
-          { preferLite: true, firstTokenTimeoutMs: isTurboSpecialist ? 2800 : 4000 }
+          {
+            slotId: slot.slotId,
+            onModelUsed: (m) => { wonGeminiModel = m; },
+            primaryModel: routePlan.primaryModel,
+            primaryThinking: routePlan.primaryThinking,
+            secondaryModel: routePlan.secondaryModel,
+            secondaryThinking: routePlan.secondaryThinking,
+            hedgeDelayMs: routePlan.hedgeDelayMs,
+            firstTokenTimeoutMs: routePlan.firstTokenTimeoutMs,
+            totalStreamTimeoutMs: routePlan.totalStreamTimeoutMs,
+            chunkStallTimeoutMs: routePlan.chunkStallTimeoutMs,
+          }
         );
         if (okGem || sentAny) {
-          if (cacheKey && streamedAcc.length > 20) setLokiCodeCached(cacheKey, streamedAcc);
+          setUsedSource('gemini', wonGeminiModel);
+          const finalOut = await verifyAndRepairStreamOutput(streamedAcc);
+          if (cacheKey && finalOut.length > 20) setLokiCodeCached(cacheKey, finalOut);
+          finishStream();
+          return;
+        }
+        if (chainCooldowns.isHot(slot.slotId)) {
+          chainCooldowns.cool(slot.slotId, 15_000);
+        }
+        sentAny = false;
+        streamedAcc = '';
+      }
+
+      // 4. Remaining Keyed Coding Chain: Cerebras / SambaNova / Mistral / OpenRouter / Together / Fireworks / OpenAI / DeepSeek / xAI / NVIDIA / Anthropic
+      if (parsedImages.length === 0) {
+        const codeChainOut = await streamKeyedAiChain({
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userText },
+          ],
+          maxTokens: routePlan.maxOutputTokens,
+          temperature: 0.15,
+          purpose: 'code',
+          excludeProviders: ['groq', 'codestral'],
+          firstTokenTimeoutMs: 3600,
+          totalTimeoutMs: 9500,
+          onDelta: (t) => {
+            sentAny = true;
+            streamedAcc += t;
+            writeChunk(t);
+          },
+        });
+        if (codeChainOut.ok || sentAny) {
+          setUsedSource(codeChainOut.providerId || 'openrouter', codeChainOut.model || 'auto');
+          const finalOut = await verifyAndRepairStreamOutput(streamedAcc);
+          if (cacheKey && finalOut.length > 20) setLokiCodeCached(cacheKey, finalOut);
           finishStream();
           return;
         }
       }
 
-      // Multimodal vision fallback via Kepler Qwen2.5-VL-72B when images are attached and Gemini wasn't available
-      if (parsedImages.length > 0 && isProviderHot('ovh-kepler')) {
+      // 5. Multimodal vision fallback via OpenRouter/Kepler when images are attached and Gemini wasn't available
+      if (parsedImages.length > 0) {
         const visionContent: any[] = [{ type: 'text', text: userText }];
         for (const img of parsedImages) {
           visionContent.push({ type: 'image_url', image_url: { url: img.dataUrl } });
         }
-        const visionText = await callVisionAI(
-          [
+        const visionChain = await callKeyedAiChain({
+          messages: [
             { role: 'system', content: systemInstruction },
             { role: 'user', content: visionContent },
           ],
-          0.15,
-          3200
-        );
-        if (visionText) {
-          const step = Math.max(120, Math.ceil(visionText.length / 16));
-          for (let i = 0; i < visionText.length; i += step) {
-            writeChunk(visionText.slice(i, i + step));
-          }
+          purpose: 'vision',
+          maxTokens: 3600,
+          temperature: 0.15,
+          timeoutMs: 8500,
+        });
+        if (visionChain.ok && visionChain.text) {
+          setUsedSource(visionChain.providerId || 'openrouter', visionChain.model || 'vision');
+          await streamProgressively(visionChain.text);
+          await verifyAndRepairStreamOutput(visionChain.text);
           finishStream();
           return;
         }
+        if (isProviderHot('ovh-kepler')) {
+          const visionText = await callVisionAI(
+            [
+              { role: 'system', content: systemInstruction },
+              { role: 'user', content: visionContent },
+            ],
+            0.15,
+            3600
+          );
+          if (visionText) {
+            setUsedSource('ovh-kepler', 'Qwen2.5-VL-72B-Instruct');
+            await streamProgressively(visionText);
+            await verifyAndRepairStreamOutput(visionText);
+            finishStream();
+            return;
+          }
+        }
       }
 
-      // Parallel Kepler OVH Stream Race (strict 1.4s LSL/MATLAB first-token deadline + 180s circuit breaker — ZERO 30s stalls!)
+      // 6. Parallel Kepler OVH Stream Race
       const oaiMessages = [
         { role: 'system', content: systemInstruction },
         { role: 'user', content: userText },
       ];
       const okOvh = await raceOvhStreams(
         oaiMessages,
-        isTurboSpecialist ? 2400 : 4096,
+        routePlan.maxOutputTokens,
         0.15,
         (t) => {
           sentAny = true;
           streamedAcc += t;
           writeChunk(t);
         },
-        isTurboSpecialist ? 1400 : 2400
+        routePlan.ovhTimeoutMs
       );
       if (okOvh || sentAny) {
-        if (cacheKey && streamedAcc.length > 20) setLokiCodeCached(cacheKey, streamedAcc);
+        setUsedSource('ovh-kepler', 'Mistral-Small-3.2-24B');
+        const finalOut = await verifyAndRepairStreamOutput(streamedAcc);
+        if (cacheKey && finalOut.length > 20) setLokiCodeCached(cacheKey, finalOut);
         finishStream();
         return;
       }
 
-      // Instant Sub-10ms Deterministic Pro LSL2/Mono, MATLAB & Polyglot Synthesis Engine
+      // 7. Deterministic Pro LSL2/Mono, MATLAB & Polyglot Synthesis Engine
+      setUsedSource('offline', `deterministic-${langId}`);
       const fallbackBlock = synthesizeInstantSpecialist();
       if (cacheKey) setLokiCodeCached(cacheKey, fallbackBlock);
-      const step = Math.max(220, Math.ceil(fallbackBlock.length / 10));
-      for (let i = 0; i < fallbackBlock.length; i += step) {
-        writeChunk(fallbackBlock.slice(i, i + step));
-      }
+      await streamProgressively(fallbackBlock);
+      await verifyAndRepairStreamOutput(fallbackBlock);
       finishStream();
     } catch (_e) {
       if (!sentAny) {
+        setUsedSource('offline', `deterministic-${langId}`);
         const fb = synthesizeInstantSpecialist();
-        writeChunk(fb);
+        await streamProgressively(fb);
+        await verifyAndRepairStreamOutput(fb);
       }
       finishStream();
     }
-  });
+  };
 
-  // Deterministic sub-5ms Static Compiler Verification & Auto-Fixer (Second Life LSL2/Mono & MATLAB)
+  app.post('/api/lokicode/stream', lokiCodeStreamHandler);
+  app.post('/api/lokicode/generate', lokiCodeStreamHandler);
+
+  // Deterministic sub-50ms Static Compiler Verification & Auto-Fixer for ALL LokiCode languages
   app.post('/api/lokicode/verify', (req, res) => {
     try {
       const lang = String(req.body?.lang || 'lsl').toLowerCase().trim();
       const code = String(req.body?.code || '');
-      if (lang === 'lsl') {
-        const audit = analyzeAndFixLslScript(code);
-        return res.json({
-          ok: true,
-          instant: true,
-          lang: 'lsl',
-          valid: audit.valid,
-          code: audit.code,
-          errors: audit.errors,
-          warnings: audit.warnings,
-          fixes: audit.fixes,
-          stats: audit.stats,
-        });
-      }
-      if (lang === 'matlab') {
-        const audit = analyzeAndFixMatlabScript(code);
-        return res.json({
-          ok: true,
-          instant: true,
-          lang: 'matlab',
-          valid: audit.valid,
-          code: audit.code,
-          errors: audit.errors,
-          warnings: audit.warnings,
-          fixes: audit.fixes,
-          stats: audit.stats,
-        });
-      }
-      return res.json({ ok: true, instant: false, lang, valid: true, code, errors: [], warnings: [], fixes: [] });
+      const audit = verifyGeneratedCodeFast(lang, code);
+      return res.json({
+        ok: true,
+        instant: true,
+        lang: audit.lang,
+        compiler: audit.compiler,
+        valid: audit.ok,
+        code: audit.code,
+        errors: audit.errors,
+        warnings: audit.warnings,
+        fixes: audit.fixes,
+        verifyMs: audit.verifyMs,
+      });
     } catch (e: any) {
       return res.status(500).json({ ok: false, error: e?.message || 'Verification failed' });
     }
@@ -6536,7 +7202,7 @@ engine.runReport();
 
   // --- 1. LSL (Second Life) ---
   if (isLSL) {
-    return `\`\`\`lsl\n${generateOfflineProfessionalLsl(cleanPrompt)}\n\`\`\``;
+    return generateOfflineProfessionalLsl(cleanPrompt);
   }
 
   // --- 2. Python ---
@@ -6800,10 +7466,11 @@ app.summary();
 
 function synthesizeFallback(messages: any[], systemInstruction: string, json = false): string {
   const lastUserMsg = messages?.slice().reverse().find((m: any) => m.role === 'user');
-  const userText = String(lastUserMsg?.content || '');
+  const userText = extractTextContent(lastUserMsg?.content);
   const combined = (systemInstruction + '\n' + userText).toLowerCase();
-  const isHeb = /[\u0590-\u05FF]/.test(userText) || /[\u0590-\u05FF]/.test(systemInstruction);
-  const isAr = /[\u0600-\u06FF]/.test(userText) || /[\u0600-\u06FF]/.test(systemInstruction);
+  const fbLang = detectFallbackLanguage(userText, systemInstruction);
+  const isHeb = fbLang === 'he';
+  const isAr = fbLang === 'ar';
 
   // 0. Structured JSON requests (chatJSON for Ultra Blueprint, Search Queries, Charts, Quizzes, Lessons, Slides, Verifier)
   if (json || /return only valid json|return only json|output only the json/i.test(combined)) {
@@ -6938,22 +7605,22 @@ function synthesizeFallback(messages: any[], systemInstruction: string, json = f
     }
   }
 
-  // 7. Founder / Model creator attribution & greetings
-  const cleanUser = userText.trim();
-  if (/elad|benczel|בנצל|אלעד|founded|founder|creator|created|developed|הקים|ייסד|פיתח|מי בנה|מי יצר|מפתח המודל/i.test(cleanUser) && /lokizen|lokiz|לוקיזנית|לוקיז|studio|סטודיו|model|מודל|ai|בוט/i.test(cleanUser)) {
+  // 7. Platform identity attribution & natural greetings (supports Unicode Hebrew/Arabic without broken \b)
+  const cleanUser = stripSystemWrappers(userText);
+
+  if (/founded|founder|creator|created|developed|הקים|ייסד|פיתח|מי בנה|מי יצר|מפתח המודל/i.test(cleanUser) && /lokizen|lokiz|לוקיזנית|לוקיז|studio|סטודיו|model|מודל|ai|בוט/i.test(cleanUser)) {
     if (isHeb) {
-      return '**אלעד בנצל (Elad Benczel)** הוא המייסד של **Lokizenith Studios (Lokiz Studios)** והאחראי הראשי על פיתוח מודלי ה-AI של הפלטפורמה — כולל Lokizenith 3.5 Fera, Lokizen 4.0 Stark ו-LokiCode.';
+      return 'מודלי **Lokizenith AI** (כולל Lokizenith 3.5 Fera, Lokizen 4.0 Stark ו-LokiCode) פותחו על ידי צוות **Lokizenith Studios**.';
     }
     if (isAr) {
-      return '**إيلاد بنتسل (Elad Benczel)** هو مؤسس **Lokizenith Studios (Lokiz Studios)** والمسؤول عن تطوير نماذج الذكاء الاصطناعي الخاصة بالمنصة.';
+      return 'تم تطوير نماذج **Lokizenith AI** بواسطة فريق **Lokizenith Studios**.';
     }
-    return '**Elad Benczel (אלעד בנצל)** founded **Lokizenith Studios (Lokiz Studios)** and is responsible for developing all of its AI models, including Lokizenith 3.5 Fera, Lokizen 4.0 Stark, and LokiCode.';
+    return '**Lokizenith AI** models (including Lokizenith 3.5 Fera, Lokizen 4.0 Stark, and LokiCode) are developed by **Lokizenith Studios**.';
   }
 
-  if (/^(hi|hello|hey|yo|sup|good morning|good afternoon|good evening|שלום|היי|אהלן|מה קורה|מה נשמע|בוקר טוב|ערב טוב|مرحبا|أهلا)\b[!?.,\s]*$/i.test(cleanUser)) {
-    if (isHeb) return 'היי! 😊 מה נשמע? איך אפשר לעזור לך היום?';
-    if (isAr) return 'مرحباً! 😊 كيف يمكنني مساعدتك اليوم؟';
-    return 'Hey there! 😊 How can I help you today?';
+  const greetingReply = matchGreetingOrSmallTalk(cleanUser, fbLang);
+  if (greetingReply) {
+    return greetingReply;
   }
 
   // 8. Explicit table or comparison requests
@@ -6980,7 +7647,7 @@ function synthesizeFallback(messages: any[], systemInstruction: string, json = f
 | ביצועים ויעילות | אופטימיזציה, יציבות ותוצאות מדידות | בחינת ביצועים בזמן אמת |
 | הרחבה והמלצות | שיטות עבודה מיטביות ומבט קדימה | שילוב מלא בתהליך העבודה |
 
-הטבלה מציגה תמונה מלאה ומסודרת של הנושא. אשמח להרחיב על כל עמודה או להוסיף היבטים נוספים!`;
+הטבלה מציגה תמונה מלאה ומסודרת של הנושא. אשמח להרחיב על כל עמודה או להוסיף פרטים נוספים!`;
     }
     return `Here is a clear, structured table for your request:
 
@@ -6993,9 +7660,7 @@ function synthesizeFallback(messages: any[], systemInstruction: string, json = f
 Feel free to ask for additional columns or more granular data!`;
   }
 
-  return isHeb
-    ? `לגבי "${cleanUser.slice(0, 80)}": הנושא כולל מספר היבטים מרכזיים שכדאי לקחת בחשבון. שאל אותי כל פרט נוסף ונצלול לעומק!`
-    : `Here is a direct overview regarding "${cleanUser.slice(0, 80)}": feel free to ask a follow-up question or specify any detail you'd like to explore further.`;
+  return buildUpstreamBusyReply(fbLang);
 }
 
   registerLokizenithSyncRoutes(app, getAuthUser);
@@ -7035,7 +7700,9 @@ Feel free to ask for additional columns or more granular data!`;
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    const publicPath = path.join(process.cwd(), 'public');
     app.use(express.static(distPath));
+    app.use(express.static(publicPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

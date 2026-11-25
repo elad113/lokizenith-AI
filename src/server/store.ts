@@ -72,11 +72,14 @@ import {
 } from '../utils/maintenanceMode.ts';
 import {
   SECTION_KEYS,
+  buildFirestoreUpgradeUrl,
   diffStringMap,
+  isFirestoreQuotaError,
   probeFirestoreEmulator,
   resolveFirebaseTarget,
   resolveStorageMode,
   sectionDefault,
+  shouldFallbackToDiskOnBootError,
   suppressAccidentalUserWipe,
 } from './firestoreCodec.ts';
 import {
@@ -298,7 +301,7 @@ interface StoreShape {
 
 const DATA_DIR = process.env.LZ_DATA_DIR
   ? path.resolve(process.env.LZ_DATA_DIR)
-  : path.join(process.cwd(), '.lz-data');
+  : path.join(os.homedir(), '.lokizenith-data');
 const STORE_FILE = path.join(DATA_DIR, 'store.json');
 const WAL_FILE = path.join(DATA_DIR, 'wal.ndjson');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
@@ -312,8 +315,8 @@ const VAULT_STORE_FILE = path.join(VAULT_DIR, 'store.json');
 const VAULT_WAL_FILE = path.join(VAULT_DIR, 'wal.ndjson');
 const VAULT_BACKUP_DIR = path.join(VAULT_DIR, 'backups');
 
-const AUTO_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
-const MAX_ROLLING_SNAPSHOTS = 24;
+const AUTO_SNAPSHOT_INTERVAL_MS = 15 * 60 * 1000;
+const MAX_ROLLING_SNAPSHOTS = 4;
 let lastAutoSnapshotAt = 0;
 let walSeq = 0;
 let walPendingCount = 0;
@@ -807,8 +810,14 @@ function collectFirestoreDiff(): {
   };
 }
 
+let firestoreQuotaBackoffUntil = 0;
+
 function flushFirestoreNow(snapshotReason?: string): void {
   clearFirestoreDebounce();
+  if (Date.now() < firestoreQuotaBackoffUntil) {
+    storeDirty = true;
+    return;
+  }
   const taken = collectFirestoreDiff();
   if (taken) {
     try {
@@ -816,6 +825,18 @@ function flushFirestoreNow(snapshotReason?: string): void {
     } catch (err) {
       taken.rollback();
       storeDirty = true;
+      if (isFirestoreQuotaError(err)) {
+        firestoreQuotaBackoffUntil = Date.now() + 5 * 60_000;
+        let upgradeUrl = 'https://firebase.google.com/pricing#cloud-firestore';
+        try {
+          const ids = resolveFirebaseTarget();
+          upgradeUrl = buildFirestoreUpgradeUrl(ids.projectId, ids.databaseId);
+        } catch {}
+        console.warn(
+          `[Store] Firestore quota exhausted during flush; pausing cloud writes for 5m without overwriting remote data. Upgrade or wait for daily quota reset: ${upgradeUrl}`
+        );
+        return;
+      }
       console.error('[Store] Firestore flush failed:', err instanceof Error ? err.message : err);
       throw err;
     }
@@ -834,6 +855,7 @@ function flushFirestoreNow(snapshotReason?: string): void {
 
 function persistStoreFirestore(opts?: { immediate?: boolean; snapshotReason?: string }): void {
   storeDirty = true;
+  if (Date.now() < firestoreQuotaBackoffUntil) return;
   if (opts?.immediate || opts?.snapshotReason) {
     flushFirestoreNow(opts?.snapshotReason);
     return;
@@ -849,7 +871,7 @@ function persistStoreFirestore(opts?: { immediate?: boolean; snapshotReason?: st
     } catch {
       // Logged inside flush. The safety timer retries while the store stays dirty.
     }
-  }, 400);
+  }, 1500);
   if (typeof firestoreDebounce.unref === 'function') firestoreDebounce.unref();
 }
 
@@ -978,7 +1000,7 @@ async function initFirestoreStore(): Promise<void> {
     await startFirestoreWorker();
     const loaded = await firestoreRequestAsync<{ store: Record<string, any> }>(
       'load',
-      { mirror: process.env.LZ_FIRESTORE_MIRROR !== '0' },
+      { mirror: process.env.LZ_FIRESTORE_MIRROR === '1' },
       20_000
     );
     const remoteUsers = loaded?.store?.users && typeof loaded.store.users === 'object' ? loaded.store.users : {};
@@ -1026,21 +1048,27 @@ async function initFirestoreStore(): Promise<void> {
       `[Store] Firestore ready project=${ids.projectId} database=${ids.databaseId} users=${Object.keys(store.users).length} sessions=${Object.keys(store.sessions).length}.`
     );
   } catch (err) {
-    const forcedFirestore = ['firestore', 'cloud'].includes(
-      String(process.env.LZ_STORAGE || '').trim().toLowerCase()
-    );
     const errMsg = err instanceof Error ? err.message : String(err);
-    const isAuthOrPermError =
-      /PERMISSION_DENIED|UNAUTHENTICATED|Could not load the default credentials|insufficient permissions/i.test(errMsg);
 
-    if (!forcedFirestore && isAuthOrPermError) {
+    if (shouldFallbackToDiskOnBootError(err)) {
       await stopFirestoreWorker().catch(() => {});
       STORAGE_MODE = 'disk';
       adoptStore(loadStoreFromDisk());
       durableReady = true;
-      console.warn(
-        `[Store] Server-side Firestore unavailable (${errMsg}). Falling back to durable disk + WAL storage (${Object.keys(store.users).length} accounts).`
-      );
+      if (isFirestoreQuotaError(err)) {
+        let upgradeHint = 'https://firebase.google.com/pricing#cloud-firestore';
+        try {
+          const ids = resolveFirebaseTarget();
+          upgradeHint = buildFirestoreUpgradeUrl(ids.projectId, ids.databaseId);
+        } catch {}
+        console.warn(
+          `[Store] Firestore free-tier daily quota exhausted (${errMsg}). Starting in local durable disk + WAL fallback mode (${Object.keys(store.users).length} accounts) without overwriting remote Firestore data. Quota resets daily or upgrade database at: ${upgradeHint}`
+        );
+      } else {
+        console.warn(
+          `[Store] Server-side Firestore unavailable (${errMsg}). Falling back to durable disk + WAL storage (${Object.keys(store.users).length} accounts).`
+        );
+      }
       return;
     }
 
@@ -1076,15 +1104,21 @@ function hydrateTokenFromFirestore(token: string): void {
   if (!needSession && !needUser && !needData) return;
   if (needSession && Date.now() < (sessionMissUntil.get(token) || 0)) return;
 
+  if (Date.now() < firestoreQuotaBackoffUntil) return;
   let found: { session?: { token: string; userId: string; createdAt: number } | null; user?: any; userData?: any } | null;
   try {
     found = firestoreRequestSync('lookup', { token }, 8_000);
   } catch (err) {
+    if (isFirestoreQuotaError(err)) {
+      firestoreQuotaBackoffUntil = Date.now() + 5 * 60_000;
+      console.warn('[Store] Firestore session lookup hit quota limit; pausing lookups for 5m.');
+      return;
+    }
     console.error('[Store] Firestore session lookup failed:', err instanceof Error ? err.message : err);
     return;
   }
   if (!found?.session) {
-    sessionMissUntil.set(token, Date.now() + 1500);
+    sessionMissUntil.set(token, Date.now() + 60_000);
     if (existing?.userId) userDataChecked.add(existing.userId);
     return;
   }

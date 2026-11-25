@@ -9,6 +9,12 @@ import {
 } from './firestoreCodec.ts';
 
 let cachedDb: Firestore | null = null;
+const knownPartCounts = new Map<string, number>();
+let fullStoreLoaded = false;
+
+function partCacheKey(collectionName: string, recordKey: string): string {
+  return `${collectionName}:${recordKey}`;
+}
 
 export function getFirestoreDb(): Firestore {
   if (cachedDb) return cachedDb;
@@ -42,7 +48,7 @@ async function listDocs(db: Firestore, name: string): Promise<QueryDocumentSnaps
   return docs;
 }
 
-function groupChunkDocs(docs: QueryDocumentSnapshot[]): Record<string, any> {
+function groupChunkDocs(docs: QueryDocumentSnapshot[], collectionName?: string): Record<string, any> {
   const groups = new Map<string, { part: number; json: string }[]>();
   for (const doc of docs) {
     const data = doc.data() || {};
@@ -54,6 +60,9 @@ function groupChunkDocs(docs: QueryDocumentSnapshot[]): Record<string, any> {
   const out: Record<string, any> = {};
   for (const [key, parts] of groups) {
     parts.sort((a, b) => a.part - b.part);
+    if (collectionName) {
+      knownPartCounts.set(partCacheKey(collectionName, key), Math.max(1, parts.length));
+    }
     const joined = parts.map((p) => p.json).join('');
     try {
       out[key] = joined ? JSON.parse(joined) : null;
@@ -65,9 +74,22 @@ function groupChunkDocs(docs: QueryDocumentSnapshot[]): Record<string, any> {
 }
 
 async function readPartCount(db: Firestore, collectionName: string, recordKey: string): Promise<number> {
+  const cacheKey = partCacheKey(collectionName, recordKey);
+  if (knownPartCounts.has(cacheKey)) {
+    return knownPartCounts.get(cacheKey)!;
+  }
+  // If we already loaded the entire store from Firestore, any record not in knownPartCounts has 0 existing parts.
+  if (fullStoreLoaded) {
+    return 0;
+  }
   const snap = await db.collection(collectionName).doc(chunkDocId(recordKey, 0)).get();
-  if (!snap.exists) return 0;
-  return Math.max(1, Number(snap.data()?.parts || 1));
+  if (!snap.exists) {
+    knownPartCounts.set(cacheKey, 0);
+    return 0;
+  }
+  const count = Math.max(1, Number(snap.data()?.parts || 1));
+  knownPartCounts.set(cacheKey, count);
+  return count;
 }
 
 async function commitOps(
@@ -107,6 +129,7 @@ async function writeChunkedRecord(db: Firestore, collectionName: string, recordK
     ops.push({ kind: 'delete', refPath: [collectionName, chunkDocId(recordKey, part)] });
   }
   await commitOps(db, ops);
+  knownPartCounts.set(partCacheKey(collectionName, recordKey), parts.length);
   return ops.length;
 }
 
@@ -118,6 +141,7 @@ async function deleteChunkedRecord(db: Firestore, collectionName: string, record
     ops.push({ kind: 'delete', refPath: [collectionName, chunkDocId(recordKey, part)] });
   }
   await commitOps(db, ops);
+  knownPartCounts.delete(partCacheKey(collectionName, recordKey));
   return ops.length;
 }
 
@@ -178,9 +202,11 @@ export async function loadEntireStore(): Promise<{ store: Record<string, any> }>
     listDocs(db, LZ_COLLECTIONS.userData),
     listDocs(db, LZ_COLLECTIONS.sections),
   ]);
-  const users = groupChunkDocs(userDocs);
-  const userData = groupChunkDocs(userDataDocs);
-  const sectionRecords = groupChunkDocs(sectionDocs);
+  knownPartCounts.clear();
+  const users = groupChunkDocs(userDocs, LZ_COLLECTIONS.users);
+  const userData = groupChunkDocs(userDataDocs, LZ_COLLECTIONS.userData);
+  const sectionRecords = groupChunkDocs(sectionDocs, LZ_COLLECTIONS.sections);
+  fullStoreLoaded = true;
   const meta =
     sectionRecords.meta && typeof sectionRecords.meta === 'object' && !Array.isArray(sectionRecords.meta)
       ? sectionRecords.meta
@@ -252,6 +278,7 @@ async function readSingleRecord(db: Firestore, collectionName: string, recordKey
   const first = await db.collection(collectionName).doc(chunkDocId(recordKey, 0)).get();
   if (!first.exists) return null;
   const parts = Math.max(1, Number(first.data()?.parts || 1));
+  knownPartCounts.set(partCacheKey(collectionName, recordKey), parts);
   const chunks: string[] = new Array(parts);
   chunks[0] = String(first.data()?.json ?? '');
   if (parts > 1) {
@@ -287,4 +314,6 @@ export async function wipeServerCollections(): Promise<void> {
   for (const name of Object.values(LZ_COLLECTIONS)) {
     await deleteAllDocs(db, name);
   }
+  knownPartCounts.clear();
+  fullStoreLoaded = false;
 }

@@ -1065,8 +1065,9 @@ function paint(code, opts = {}){
   if (l.id === 'matlab') ensureMATLAB();
   const text = String(code || '');
   const fastStream = !!opts.fast;
+  const showCursor = !!opts.cursor;
   const now = performance.now();
-  const shouldHighlight = !fastStream || (now - lastHljsTime > 260 && text.length < 18000);
+  const shouldHighlight = !fastStream || (now - lastHljsTime > 120 && text.length < 24000);
   let html;
   if (shouldHighlight && window.hljs) {
     lastHljsTime = now;
@@ -1083,7 +1084,11 @@ function paint(code, opts = {}){
   }
   const el = $('#lcCode');
   if (el) {
-    el.innerHTML = html.split('\n').map(x => `<span class="ln">${x}</span>`).join('\n');
+    const lines = html.split('\n');
+    const lastIdx = lines.length - 1;
+    el.innerHTML = lines
+      .map((x, idx) => `<span class="ln">${x}${showCursor && idx === lastIdx ? '<span class="lc-type-cursor" aria-hidden="true"></span>' : ''}</span>`)
+      .join('\n');
   }
   updateFile();
 }
@@ -1333,6 +1338,9 @@ function ensureFixStyles(){
   s.textContent = `
     .lc-verify-banner { flex-wrap: wrap; }
     .lc-verify-banner.fixing { background: rgba(245, 158, 11, 0.16); border: 1px solid rgba(251, 191, 36, 0.55); color: #fde68a; }
+    .lc-verify-banner .v-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .lc-verify-banner .v-body b { display: block; line-height: 1.3; }
+    .lc-verify-banner .v-body small { display: block; line-height: 1.35; opacity: 0.92; }
     .lc-banner-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
     .lc-btn-fix, .lc-btn-stop {
       padding: 7px 14px; border-radius: 10px; font-size: 0.82rem; font-weight: 800; cursor: pointer;
@@ -1928,8 +1936,10 @@ function formatCode(){
 
 /* ---------- Single-Roundtrip Turbo SSE Stream (/api/lokicode/stream) ---------- */
 let lastStreamVerify = null;
+let lastStreamMeta = null;
 async function streamLokiCodeTurbo(payload, onToken){
   lastStreamVerify = null;
+  lastStreamMeta = null;
   const headers = { 'Content-Type': 'application/json' };
   const tok = window.LZAuth?.getToken?.();
   if (tok) headers['x-lz-token'] = tok;
@@ -1939,7 +1949,13 @@ async function streamLokiCodeTurbo(payload, onToken){
   }
 
   const ctl = new AbortController();
-  const connectTimer = setTimeout(() => ctl.abort(), 16000);
+  const connectTimer = setTimeout(() => ctl.abort(), 9000);
+  const totalStreamTimer = setTimeout(() => ctl.abort(), 14500);
+  let chunkWatchdog = null;
+  const bumpWatchdog = () => {
+    if (chunkWatchdog) clearTimeout(chunkWatchdog);
+    chunkWatchdog = setTimeout(() => ctl.abort(), 6500);
+  };
   try {
     const res = await fetch('/api/lokicode/stream', {
       method: 'POST',
@@ -1965,40 +1981,59 @@ async function streamLokiCodeTurbo(payload, onToken){
     const dec = new TextDecoder();
     let buf = '';
     let full = '';
+    bumpWatchdog();
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith('data:')) continue;
-        const d = line.slice(5).trim();
-        if (d === '[DONE]') continue;
-        try {
-          const j = JSON.parse(d);
-          if (j.account) {
-            window.LZAuth?.updateAccountState?.(j.account);
-          }
-          if (j.delta) {
-            full += j.delta;
-            if (onToken) onToken(j.delta, full);
-          }
-          // Server repetition guard / dedupe / auto-fix replaced the buffer
-          if (typeof j.reset === 'string') {
-            full = j.reset;
-            if (onToken) onToken('', full);
-          }
-          if (j.verify) lastStreamVerify = j.verify;
-          if (j.status) { try { advanceWorkStep(j.status); } catch (_s) {} }
-        } catch (_e) {}
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bumpWatchdog();
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const d = line.slice(5).trim();
+          if (d === '[DONE]') continue;
+          try {
+            const j = JSON.parse(d);
+            if (j.account) {
+              window.LZAuth?.updateAccountState?.(j.account);
+            }
+            if (j.delta) {
+              full += j.delta;
+              if (onToken) onToken(j.delta, full);
+            }
+            // Server repetition guard / dedupe / auto-fix replaced the buffer
+            if (typeof j.reset === 'string') {
+              full = j.reset;
+              if (onToken) onToken('', full);
+            }
+            if (j.meta) lastStreamMeta = j.meta;
+            if (j.verify) {
+              lastStreamVerify = j.verify;
+              if (!lastStreamMeta && j.verify.provider) {
+                lastStreamMeta = {
+                  provider: j.verify.provider,
+                  model: j.verify.model || 'auto',
+                  elapsedMs: j.verify.elapsedMs || 0,
+                };
+              }
+            }
+            if (j.status) { try { advanceWorkStep(j.status); } catch (_s) {} }
+          } catch (_e) {}
+        }
       }
+    } catch (readErr) {
+      // If watchdog fired after substantial code already streamed, return it cleanly for local verification
+      if (!(full && full.length > 60)) throw readErr;
     }
     return full;
   } finally {
     clearTimeout(connectTimer);
+    clearTimeout(totalStreamTimer);
+    if (chunkWatchdog) clearTimeout(chunkWatchdog);
   }
 }
 
@@ -2073,30 +2108,126 @@ async function generate(e){
     activity: `Started ${st.mode === 'edit' ? 'editing' : 'generating'} ${l.name}`
   });
 
-  let lastPaintAt = 0;
   let lastTeamBroadcastAt = 0;
-  let rafPending = false;
   let latestStreamedCode = '';
   let steppedStream = false;
 
-  const schedulePaint = () => {
-    if (rafPending) return;
-    rafPending = true;
-    requestAnimationFrame(() => {
-      rafPending = false;
-      const now = performance.now();
-      if (now - lastPaintAt < 24 && busy) return;
-      lastPaintAt = now;
-      if (latestStreamedCode) {
-        st.code = latestStreamedCode;
-        paint(latestStreamedCode, { fast: true });
-        const tokens = (latestStreamedCode.match(/\S+/g) || []).length;
-        const m = latestStreamedCode.match(/([A-Za-z_]\w*)\s*$/);
-        updateTokenAudit(m ? m[1] : 'stream', tokens);
-        if (wrap) wrap.scrollTop = wrap.scrollHeight;
-      }
-    });
+  // Smooth adaptive live typewriter pacer so code ALWAYS appears as it is being typed (never dumped all at once)
+  const prefersReducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  let displayedLen = 0;
+  let streamEnded = false;
+  let typerActive = false;
+  let typerRaf = 0;
+  let typerTimer = 0;
+  let lastFrameAt = 0;
+  let userPinnedTop = false;
+  let drainResolvers = [];
+
+  const isNearBottom = () => {
+    if (!wrap) return true;
+    return (wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight) < 88;
   };
+  const onWrapScroll = () => {
+    userPinnedTop = !isNearBottom();
+  };
+  if (wrap) wrap.addEventListener('scroll', onWrapScroll, { passive: true });
+
+  const resolveDrain = () => {
+    const list = drainResolvers;
+    drainResolvers = [];
+    list.forEach(fn => { try { fn(); } catch(_){} });
+  };
+
+  const stopTyper = () => {
+    typerActive = false;
+    if (typerRaf) { cancelAnimationFrame(typerRaf); typerRaf = 0; }
+    if (typerTimer) { clearTimeout(typerTimer); typerTimer = 0; }
+    if (wrap) wrap.removeEventListener('scroll', onWrapScroll);
+    resolveDrain();
+  };
+
+  const renderTyperStep = (nowTs) => {
+    typerRaf = 0;
+    typerTimer = 0;
+    if (!typerActive) return;
+
+    const dt = Math.min(80, Math.max(10, lastFrameAt ? (nowTs - lastFrameAt) : 16));
+    lastFrameAt = nowTs;
+
+    const target = latestStreamedCode || '';
+    if (displayedLen > target.length) displayedLen = target.length;
+    const backlog = target.length - displayedLen;
+
+    if (backlog > 0) {
+      let step;
+      if (prefersReducedMotion) {
+        step = backlog;
+      } else if (streamEnded) {
+        // Snappily finish typing any remaining buffered tail (~0.15-0.35s drain)
+        const drainRate = Math.min(14000, Math.max(2200, backlog * 7.0));
+        step = Math.max(8, Math.round((drainRate * dt) / 1000));
+      } else {
+        // Smooth real-time live-typing cadence that keeps tight pace with fast token streams
+        const liveRate = Math.min(5400, Math.max(460, backlog * 4.2));
+        step = Math.max(3, Math.round((liveRate * dt) / 1000));
+      }
+      displayedLen = Math.min(target.length, displayedLen + step);
+      const visible = target.slice(0, displayedLen);
+      st.code = visible;
+      paint(visible, { fast: true, cursor: true });
+      const tokens = (visible.match(/\S+/g) || []).length;
+      const m = visible.match(/([A-Za-z_]\w*)\s*$/);
+      updateTokenAudit(m ? m[1] : 'typing', tokens);
+      if (wrap && !userPinnedTop) wrap.scrollTop = wrap.scrollHeight;
+    } else if (displayedLen === 0 && !streamEnded) {
+      // Show active blinking cursor while first tokens are arriving
+      paint('', { fast: true, cursor: true });
+    }
+
+    if (streamEnded && displayedLen >= target.length) {
+      typerActive = false;
+      resolveDrain();
+      return;
+    }
+
+    if (document.hidden) {
+      typerTimer = setTimeout(() => renderTyperStep(performance.now()), 20);
+    } else {
+      typerRaf = requestAnimationFrame(renderTyperStep);
+    }
+  };
+
+  const ensureTyperRunning = () => {
+    if (typerActive) return;
+    typerActive = true;
+    lastFrameAt = performance.now();
+    if (document.hidden) {
+      typerTimer = setTimeout(() => renderTyperStep(performance.now()), 16);
+    } else {
+      typerRaf = requestAnimationFrame(renderTyperStep);
+    }
+  };
+
+  const waitForTypewriterDrain = () => new Promise((resolve) => {
+    if (prefersReducedMotion || displayedLen >= (latestStreamedCode || '').length) {
+      stopTyper();
+      resolve();
+      return;
+    }
+    drainResolvers.push(resolve);
+    ensureTyperRunning();
+  });
+
+  // Start immediately with a clean typing canvas, blinking emerald caret, and scroll editor into view
+  if (st.mode !== 'edit') {
+    st.code = '';
+    paint('', { fast: true, cursor: true });
+  }
+  const editorStage = $('#lcWork') || wrap;
+  if (editorStage && typeof editorStage.scrollIntoView === 'function') {
+    try { editorStage.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'start' }); } catch(_) {}
+  }
+  ensureTyperRunning();
 
   const onStreamChunk = (_delta, full) => {
     const cleaned = extractStreamingCode(full);
@@ -2104,9 +2235,9 @@ async function generate(e){
     latestStreamedCode = cleaned;
     if (!steppedStream && cleaned.length > 20) {
       steppedStream = true;
-      advanceWorkStep(`2. Writing live ${l.name} code & auditing syntax…`);
+      advanceWorkStep(`2. Typing live ${l.name} code & auditing syntax…`);
     }
-    schedulePaint();
+    ensureTyperRunning();
     const now = performance.now();
     if (now - lastTeamBroadcastAt > 200) {
       lastTeamBroadcastAt = now;
@@ -2171,10 +2302,26 @@ async function generate(e){
           const vj = await vRes.json();
           if (vj && vj.code) {
             audited = { code: vj.code, fixes: [...audited.fixes, ...(vj.fixes || [])] };
+            lastStreamVerify = {
+              ok: !!vj.valid,
+              lang: vj.lang || l.id,
+              compiler: vj.compiler || `${l.name} Syntax Verifier`,
+              errors: vj.errors || [],
+              warnings: vj.warnings || [],
+              fixes: vj.fixes || [],
+              fixPasses: (vj.fixes || []).length ? 1 : 0,
+              verifyMs: vj.verifyMs ?? 2
+            };
           }
         }
       } catch (_vErr) {}
     }
+
+    // Let the live typewriter smoothly finish typing the complete audited script before finalizing
+    latestStreamedCode = audited.code;
+    streamEnded = true;
+    await waitForTypewriterDrain();
+    stopTyper();
 
     if (previousCode.trim() && previousCode.trim() !== audited.code.trim()) {
       lastCodeBeforeEdit = previousCode;
@@ -2189,6 +2336,11 @@ async function generate(e){
     updateTokenAudit('All symbols valid', tokens);
     advanceWorkStep(`3. Syntax & structural audit (${lineCount} lines) complete.`);
     const sv = lastStreamVerify;
+    const metaInfo = lastStreamMeta || (sv && sv.provider ? { provider: sv.provider, model: sv.model, elapsedMs: sv.elapsedMs } : null);
+    const metaElapsedStr = metaInfo && metaInfo.elapsedMs ? (metaInfo.elapsedMs / 1000).toFixed(metaInfo.elapsedMs < 1000 ? 2 : 1) + 's' : '';
+    const metaModelStr = metaInfo && metaInfo.model && metaInfo.model !== 'auto' ? ` (${metaInfo.model})` : '';
+    const metaTag = metaInfo && metaInfo.provider ? [metaInfo.provider + metaModelStr, metaElapsedStr].filter(Boolean).join(' · ') : '';
+
     if (sv && (sv.compiler || sv.method)) {
       const runTxt = sv.run && sv.run.ran ? (sv.run.ok ? (sv.run.eventsRun && sv.run.eventsRun.length ? ` · test run OK (${sv.run.eventsRun.join(', ')})` : ' · test run OK') : ' · test run failed') : '';
       const engineTxt = sv.run && sv.run.ran && sv.run.engine && !String(sv.compiler || '').includes(sv.run.engine) ? ` + ${sv.run.engine}` : '';
@@ -2197,10 +2349,11 @@ async function generate(e){
       const timeTxt = `${sv.verifyMs ?? sv.ms ?? 0} ms`;
       const tool = sv.compiler || sv.method;
       const isLsl = l.id === 'lsl' || sv.lang === 'lsl';
+      const metaPrefix = metaTag ? `${metaTag} · ` : '';
       if (sv.ok) {
-        finishWorkUI(`✓ Compiled & verified ${lineCount} lines of ${l.name}`);
+        finishWorkUI(`✓ Compiled & verified ${lineCount} lines of ${l.name}${metaTag ? ' · ' + metaTag : ''}`);
         const title = isLsl ? `✓ Compiles for OpenSim / Eureka World · ${lineCount} lines` : `✓ Verified ${l.name} · ${lineCount} lines`;
-        showVerifyBanner('ok', title, `${tool}${engineTxt}${runTxt}${fixTxt} · ${timeTxt}${extras ? ' · ' + extras : ''}`);
+        showVerifyBanner('ok', title, `${metaPrefix}${tool}${engineTxt}${runTxt}${fixTxt} · ${timeTxt}${extras ? ' · ' + extras : ''}`);
       } else {
         const issues = (sv.issues && sv.issues.length)
           ? sv.issues
@@ -2208,14 +2361,14 @@ async function generate(e){
         const failTitle = sv.compiled && sv.run && !sv.run.ok
           ? `⚠ Compiles, but the test run found a problem`
           : `✗ ${issues.length} ${l.name} compiler/runtime issue(s)`;
-        finishWorkUI(`⚠ Generated ${lineCount} lines of ${l.name} · ${issues.length} issue(s)`);
-        showVerifyBanner('fixed', failTitle, `${issues.slice(0, 3).join(' · ')} · ${tool}${fixTxt}`);
+        finishWorkUI(`⚠ Generated ${lineCount} lines of ${l.name} · ${issues.length} issue(s)${metaTag ? ' · ' + metaTag : ''}`);
+        showVerifyBanner('fixed', failTitle, `${metaPrefix}${issues.slice(0, 3).join(' · ')} · ${tool}${fixTxt}`, { showFix: true });
       }
       // Only mark verified when the real compiler/runtime said so.
       st.verified = !!sv.ok;
       updateFile();
     } else {
-      finishWorkUI(`Generated ${lineCount} lines of ${l.name} (${tokens} symbols)`);
+      finishWorkUI(`Generated ${lineCount} lines of ${l.name} (${tokens} symbols)${metaTag ? ' · ' + metaTag : ''}`);
       st.verified = false;
       updateFile();
     }
@@ -2248,6 +2401,7 @@ async function generate(e){
       A.toast('Could not complete generation — please try again', 'err');
     }
   } finally {
+    stopTyper();
     if (wrap) wrap.classList.remove('typing');
     busy = false;
     if (goBtn) {

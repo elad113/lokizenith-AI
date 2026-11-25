@@ -167,6 +167,11 @@
           <span class="lc-text"><b>LokiBot</b><small>Autonomous computer bots</small></span>
           <span class="lc-arrow">›</span>
         </button>
+        <button type="button" class="btn-lokicode btn-lessons" id="openLessons">
+          <span class="lc-icon" aria-hidden="true">🎓</span>
+          <span class="lc-text"><b>LokiLessons</b><small>תנ״ך · מקצועות · מבחנים</small></span>
+          <span class="lc-arrow">›</span>
+        </button>
         <button type="button" class="btn-lokicode btn-teamchat" id="openTeamChat">
           <span class="lc-icon" aria-hidden="true">
             <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h9A1.5 1.5 0 0 1 16 5.5v6A1.5 1.5 0 0 1 14.5 13H9l-3.5 3v-3H5.5A1.5 1.5 0 0 1 4 11.5v-6Z"/><path d="M7.5 8h5M7.5 10.5h3"/></svg>
@@ -363,6 +368,12 @@
             <div class="plus-menu" id="plusMenu">
               <button type="button" data-act="upload">📎 <span>Upload photos, files or video</span></button>
               <button type="button" data-act="export">⤓ <span>Export this chat</span></button>
+              <button type="button" data-act="games">🎮 <span>Play 2-Player Games vs AI</span></button>
+              <button type="button" data-act="urlreader">🌐 <span>Live URL &amp; Website Reader</span></button>
+              <button type="button" data-act="quiz">📝 <span>Interactive Test &amp; Quiz (5–20 Qs)</span></button>
+              <button type="button" data-act="flashcards">🃏 <span>Interactive Study Flashcards</span></button>
+              <button type="button" data-act="datachart">📊 <span>Interactive Data Chart</span></button>
+              <button type="button" data-act="decision">⚖️ <span>Weighted Decision Matrix</span></button>
               <button type="button" data-act="formula">🧮 <span>Formula Calculator</span></button>
               <button type="button" data-act="image-edit" class="stark">🖌️ <span>Edit photo</span><i>Stark</i></button>
               <button type="button" data-act="image" class="stark">🎨 <span>Create image</span><i>Stark</i></button>
@@ -577,6 +588,9 @@
 
     <!-- ===== SHARED HUB VIEW ===== -->
     <section class="view sharedhub-view" id="sharedHubView" aria-label="Shared Snippets and Chats"></section>
+
+    <!-- ===== LOKILESSONS STUDY CENTER VIEW (BIBLE / TANAKH, MATH, HISTORY, SCIENCE, LITERATURE & TESTS) ===== -->
+    <section class="view lessons-view" id="lessonsView" aria-label="LokiLessons Study Center"></section>
 
     <!-- ===== COMMUNITY EVENT VIEW (AI-POWERED ADMIN EVENTS & MILESTONE TIERS) ===== -->
     <section class="view event-view" id="eventView" aria-label="Community Event Showcase"></section>
@@ -955,8 +969,11 @@
 <script src="/auth_teams.js"></script>
 <script src="/events.js"></script>
 <script src="/games-arena.js"></script>
+<script src="/ai-capabilities.js"></script>
 <script src="/live-ui-builder.js"></script>
 <script src="/app.js"></script>
+<script src="/lessons.js"></script>
+<script src="/tools.js"></script>
 <script src="/plugins.js"></script>
 <script src="/download-app.js"></script>
 <script src="/desktop-agent.js"></script>

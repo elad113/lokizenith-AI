@@ -306,6 +306,16 @@ export function registerReportsAndKnowledgeRoutes(app: express.Express, deps: Re
     }
   });
 
+  let knowledgeFlushTimer: NodeJS.Timeout | null = null;
+  const scheduleKnowledgeFlush = () => {
+    if (knowledgeFlushTimer) return;
+    knowledgeFlushTimer = setTimeout(() => {
+      knowledgeFlushTimer = null;
+      atomicWriteJson(KNOWLEDGE_FILE, knowledgeCache);
+    }, 10000);
+    knowledgeFlushTimer.unref?.();
+  };
+
   app.post('/api/knowledge/query', (req, res) => {
     try {
       loadStores();
@@ -319,7 +329,7 @@ export function registerReportsAndKnowledgeRoutes(app: express.Express, deps: Re
         for (const m of matches) {
           m.uses = (m.uses || 0) + 1;
         }
-        atomicWriteJson(KNOWLEDGE_FILE, knowledgeCache);
+        scheduleKnowledgeFlush();
       }
       const contextPrompt = matches.length
         ? [

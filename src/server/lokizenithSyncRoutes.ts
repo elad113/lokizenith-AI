@@ -1,20 +1,30 @@
 import fs from 'fs';
 import path from 'path';
 import type express from 'express';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import {
   buildAnswerLengthInstruction,
   consumeGuestQuota,
   getGuestQuota,
+  isSafePublicHttpUrl,
 } from '../utils/guestAndLength.ts';
 import { analyzeAndFixLslScript } from '../utils/lslSpecialist.ts';
 import { analyzeAndFixMatlabScript } from '../utils/matlabSpecialist.ts';
 import { transpileTypeScriptToJs } from '../utils/lokiCodeEngine.ts';
 import { registerPluginRoutes } from './pluginsEngine.ts';
-import { registerDeepSearchRoutes } from './deepSearchEngine.ts';
+import { fetchPageTextSafe, registerDeepSearchRoutes } from './deepSearchEngine.ts';
 import { registerLokiBotRoutes } from './lokiBotRoutes.ts';
 import { buildSmartFallbackFollowups, detectTextLang } from '../utils/aiUpgrades.ts';
 import { generateGameChatReply, type GameId } from '../utils/gameEngine.ts';
+import { buildGameChatMessages, type GameChatHistoryItem } from '../utils/webSearchAndAiUpgrades.ts';
+import {
+  callKeyedAiChain,
+  chainCooldowns,
+  getHotProviderSlots,
+  streamKeyedAiChain,
+  transcribeWithGroqWhisper,
+} from './aiKeyChain.ts';
+import { buildLokiCodeSkillSystemPrompt } from './lokicodeSkill.ts';
 
 export interface BackgroundGenRecord {
   id: string;
@@ -39,13 +49,28 @@ export function getGuestIdentityKey(req: express.Request): string {
   return `ip:${ip}:${ua}`;
 }
 
-function getGenClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+function makeGenClient(apiKey: string): GoogleGenAI {
   return new GoogleGenAI({
     apiKey,
     httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
   });
+}
+
+async function runWithGeminiPool<T>(
+  fn: (ai: GoogleGenAI, apiKey: string, slotId: string) => Promise<T | null>
+): Promise<T | null> {
+  const slots = getHotProviderSlots('gemini');
+  for (const slot of slots) {
+    try {
+      const result = await fn(makeGenClient(slot.apiKey), slot.apiKey, slot.slotId);
+      if (result !== null && result !== undefined && result !== '') {
+        return result;
+      }
+    } catch {
+      chainCooldowns.coolForHttpStatus(slot.slotId, 429);
+    }
+  }
+  return null;
 }
 
 function extractReadableTextFromDataUrl(name: string, mime: string, dataUrl: string): { text: string; pages?: number } {
@@ -223,9 +248,8 @@ Rules:
 ${context ? `Earlier chat context: ${context}\n` : ''}User asked: ${question}
 Assistant answered: ${answer.slice(0, 1500)}`;
 
-      // Tier 1: Gemini fast models (valid live model IDs)
-      const ai = getGenClient();
-      if (ai) {
+      // Tier 1: Gemini Key Pool (rotates configured Gemini keys)
+      const gemItems = await runWithGeminiPool(async (ai) => {
         for (const model of ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']) {
           try {
             const out = await ai.models.generateContent({
@@ -234,34 +258,26 @@ Assistant answered: ${answer.slice(0, 1500)}`;
               config: { responseMimeType: 'application/json', maxOutputTokens: 260, temperature: 0.75 },
             });
             const items = parseFollowupJson(String(out.text || ''));
-            if (items.length >= 2) return res.json({ items, lang: detectedLang, provider: model });
+            if (items.length >= 2) return { items, model };
           } catch (_e) {}
         }
+        return null;
+      });
+      if (gemItems) {
+        return res.json({ items: gemItems.items, lang: detectedLang, provider: gemItems.model });
       }
 
-      // Tier 2: Groq fast model (if key configured)
-      if (process.env.GROQ_API_KEY) {
-        try {
-          const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-            },
-            body: JSON.stringify({
-              model: 'llama-3.1-8b-instant',
-              messages: [{ role: 'user', content: prompt }],
-              temperature: 0.75,
-              max_tokens: 240,
-            }),
-            signal: AbortSignal.timeout(5500),
-          });
-          if (r.ok) {
-            const j: any = await r.json();
-            const items = parseFollowupJson(j?.choices?.[0]?.message?.content || '');
-            if (items.length >= 2) return res.json({ items, lang: detectedLang, provider: 'groq' });
-          }
-        } catch (_e) {}
+      // Tier 2: Full Keyed Provider Chain (Groq multi-key pool -> Cerebras -> SambaNova -> OpenRouter -> Together -> Mistral -> OpenAI -> DeepSeek -> xAI -> NVIDIA -> Anthropic)
+      const chainOut = await callKeyedAiChain({
+        messages: [{ role: 'user', content: prompt }],
+        purpose: 'fast',
+        maxTokens: 240,
+        temperature: 0.75,
+        timeoutMs: 5000,
+      });
+      if (chainOut.ok) {
+        const items = parseFollowupJson(chainOut.text);
+        if (items.length >= 2) return res.json({ items, lang: detectedLang, provider: chainOut.providerId || 'chain' });
       }
 
       // Tier 3: Free Pollinations OpenAI-compatible text endpoint
@@ -298,30 +314,36 @@ Assistant answered: ${answer.slice(0, 1500)}`;
       if (!raw) return res.status(400).json({ error: 'Prompt is empty' });
       const lang = detectTextLang(raw, String(req.body?.lang || 'en'));
 
-      const ai = getGenClient();
-      if (ai) {
-        const langLabel = lang === 'he' ? 'Hebrew' : lang === 'ar' ? 'Arabic' : 'English';
+      const langLabel = lang === 'he' ? 'Hebrew' : lang === 'ar' ? 'Arabic' : 'English';
+      const enhancePrompt = `Rewrite and enhance the following user prompt so an AI gives a significantly clearer, richer, and more accurate answer. Keep the user's exact intent and write ONLY the improved prompt in ${langLabel} (no quotes, no explanation, max 3 sentences).\n\nOriginal prompt:\n${raw}`;
+
+      const gemImproved = await runWithGeminiPool(async (ai) => {
         for (const model of ['gemini-3-flash-preview', 'gemini-2.5-flash']) {
           try {
             const out = await ai.models.generateContent({
               model,
-              contents: [
-                {
-                  role: 'user',
-                  parts: [
-                    {
-                      text: `Rewrite and enhance the following user prompt so an AI gives a significantly clearer, richer, and more accurate answer. Keep the user's exact intent and write ONLY the improved prompt in ${langLabel} (no quotes, no explanation, max 3 sentences).\n\nOriginal prompt:\n${raw}`,
-                    },
-                  ],
-                },
-              ],
+              contents: [{ role: 'user', parts: [{ text: enhancePrompt }] }],
               config: { maxOutputTokens: 280 },
             });
             const improved = String(out.text || '').trim().replace(/^["']|["']$/g, '');
-            if (improved && improved.length >= raw.length * 0.7) {
-              return res.json({ ok: true, enhanced: improved });
-            }
+            if (improved && improved.length >= raw.length * 0.7) return improved;
           } catch (_e) {}
+        }
+        return null;
+      });
+      if (gemImproved) return res.json({ ok: true, enhanced: gemImproved });
+
+      const chainEnhanced = await callKeyedAiChain({
+        messages: [{ role: 'user', content: enhancePrompt }],
+        purpose: 'fast',
+        maxTokens: 280,
+        temperature: 0.5,
+        timeoutMs: 4000,
+      });
+      if (chainEnhanced.ok) {
+        const improved = chainEnhanced.text.trim().replace(/^["']|["']$/g, '');
+        if (improved && improved.length >= raw.length * 0.7) {
+          return res.json({ ok: true, enhanced: improved });
         }
       }
 
@@ -424,18 +446,43 @@ Assistant answered: ${answer.slice(0, 1500)}`;
       }
       if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Describe the attached image.' }] });
 
-      const ai = getGenClient();
-      if (ai) {
-        const stream = await ai.models.generateContentStream({
-          model: 'gemini-3.1-flash-lite-preview',
-          contents,
-          config: { systemInstruction: sysText, maxOutputTokens: 2048 },
-        });
-        for await (const chunk of stream) {
-          if (chunk.text) writeDelta(chunk.text);
+      let streamedAny = false;
+      const geminiSlots = getHotProviderSlots('gemini');
+      for (const slot of geminiSlots) {
+        try {
+          const ai = makeGenClient(slot.apiKey);
+          const stream = await ai.models.generateContentStream({
+            model: 'gemini-3.1-flash-lite-preview',
+            contents,
+            config: { systemInstruction: sysText, maxOutputTokens: 2048 },
+          });
+          for await (const chunk of stream) {
+            if (chunk.text) {
+              streamedAny = true;
+              writeDelta(chunk.text);
+            }
+          }
+          if (streamedAny) break;
+        } catch {
+          chainCooldowns.coolForHttpStatus(slot.slotId, 429);
         }
-      } else {
-        writeDelta('Image received. Configure GEMINI_API_KEY on the server to enable live multimodal vision analysis.');
+      }
+
+      if (!streamedAny) {
+        const visionRes = await streamKeyedAiChain({
+          messages: Array.isArray(messages) ? messages : [],
+          systemInstruction: sysText,
+          maxTokens: 2048,
+          purpose: 'vision',
+          firstTokenTimeoutMs: 6500,
+          onDelta: (d) => {
+            streamedAny = true;
+            writeDelta(d);
+          },
+        });
+        if (!visionRes.ok && !streamedAny) {
+          writeDelta('Image received, and all configured vision providers in the API chain are currently unavailable or rate-limited.');
+        }
       }
     } catch (e: any) {
       writeDelta(`Could not analyze the image right now (${e?.message || 'vision error'}).`);
@@ -461,28 +508,35 @@ Assistant answered: ${answer.slice(0, 1500)}`;
     }
   });
 
-  // 7. Audio / Video Transcription
+  // 7. Audio / Video Transcription (Gemini key pool -> Groq Whisper Turbo pool)
   app.post('/api/media/transcribe', async (req, res) => {
     try {
       const audio = String(req.body?.audio || '').trim();
       const mime = String(req.body?.mime || 'audio/webm').trim();
       if (!audio) return res.json({ ok: true, text: '' });
-      const ai = getGenClient();
-      if (!ai) return res.json({ ok: true, text: '' });
-      const out = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: 'Transcribe the spoken audio cleanly and accurately. Output only the transcript.' },
-              { inlineData: { mimeType: mime, data: audio } },
-            ],
-          },
-        ],
-        config: { maxOutputTokens: 1500 },
+      const gemText = await runWithGeminiPool(async (ai) => {
+        const out = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite-preview',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: 'Transcribe the spoken audio cleanly and accurately. Output only the transcript.' },
+                { inlineData: { mimeType: mime, data: audio } },
+              ],
+            },
+          ],
+          config: { maxOutputTokens: 1500 },
+        });
+        const txt = String(out.text || '').trim();
+        return txt || null;
       });
-      return res.json({ ok: true, text: String(out.text || '').trim() });
+      if (gemText) return res.json({ ok: true, text: gemText });
+
+      const groqOut = await transcribeWithGroqWhisper({ audioB64: audio, mime });
+      if (groqOut.ok && groqOut.text) return res.json({ ok: true, text: groqOut.text });
+
+      return res.json({ ok: true, text: '' });
     } catch {
       return res.json({ ok: true, text: '' });
     }
@@ -493,8 +547,6 @@ Assistant answered: ${answer.slice(0, 1500)}`;
     try {
       const prompt = String(req.body?.prompt || '').trim();
       if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
-      const ai = getGenClient();
-      if (!ai) return res.json({ ok: false, spec: null });
       const sys = `Return ONLY valid JSON for an interactive calculator spec:
 {
   "title": "Short title",
@@ -504,13 +556,33 @@ Assistant answered: ${answer.slice(0, 1500)}`;
   "resultUnit": "",
   "explanation": "1 sentence explanation"
 }`;
-      const out = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
-        contents: [{ role: 'user', parts: [{ text: `Build a formula calculator spec for: ${prompt}` }] }],
-        config: { systemInstruction: sys, responseMimeType: 'application/json', maxOutputTokens: 500 },
+      const gemSpec = await runWithGeminiPool(async (ai) => {
+        const out = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite-preview',
+          contents: [{ role: 'user', parts: [{ text: `Build a formula calculator spec for: ${prompt}` }] }],
+          config: { systemInstruction: sys, responseMimeType: 'application/json', maxOutputTokens: 500 },
+        });
+        const parsed = JSON.parse(String(out.text || 'null').trim());
+        return parsed || null;
       });
-      const spec = JSON.parse(String(out.text || 'null').trim());
-      return res.json({ ok: Boolean(spec), spec });
+      if (gemSpec) return res.json({ ok: true, spec: gemSpec });
+
+      const chainOut = await callKeyedAiChain({
+        messages: [{ role: 'user', content: `Build a formula calculator spec for: ${prompt}` }],
+        systemInstruction: sys,
+        json: true,
+        purpose: 'fast',
+        maxTokens: 500,
+        timeoutMs: 4500,
+      });
+      if (chainOut.ok) {
+        const match = chainOut.text.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (parsed) return res.json({ ok: true, spec: parsed });
+        }
+      }
+      return res.json({ ok: false, spec: null });
     } catch {
       return res.json({ ok: false, spec: null });
     }
@@ -562,9 +634,16 @@ Assistant answered: ${answer.slice(0, 1500)}`;
         return { ok: true, code: src, issues: [], compiler: `${lang.toUpperCase()} Verifier` };
       };
 
-      const ai = getGenClient();
+      const t0 = Date.now();
+      let lastCheck = checkCode(code);
+      let roundsDone = 0;
+      let finishReason = 'ok';
+      const fixSkillSys = buildLokiCodeSkillSystemPrompt({ langId: lang, mode: 'edit', comments: true });
+
       for (let round = 1; round <= maxRounds; round++) {
+        roundsDone = round;
         const resCheck = checkCode(code);
+        lastCheck = resCheck;
         code = resCheck.code;
         send({
           round,
@@ -574,31 +653,90 @@ Assistant answered: ${answer.slice(0, 1500)}`;
           issues: resCheck.issues,
           issueCount: resCheck.issues.length,
           compiler: resCheck.compiler,
+          done: resCheck.ok,
+          rounds: round,
+          verifyMs: Math.max(1, Date.now() - t0),
           status: resCheck.ok
             ? `Round ${round}/${maxRounds} · 0 errors (${resCheck.compiler})`
             : `Round ${round}/${maxRounds} · ${resCheck.issues.length} error(s) — auto-fixing…`,
         });
-        if (resCheck.ok || !ai) break;
+        if (resCheck.ok) {
+          finishReason = 'ok';
+          break;
+        }
 
         try {
-          const fixPrompt = `Fix all ${lang} errors below. Return ONLY the corrected ${lang} code without markdown fences.\nTask: ${prompt}\nErrors:\n${resCheck.issues.join('\n')}\nCode:\n${code}`;
-          const fixedRes = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite-preview',
-            contents: [{ role: 'user', parts: [{ text: fixPrompt }] }],
-            config: { maxOutputTokens: 3000 },
+          const fixPrompt = `Fix all ${lang.toUpperCase()} errors below. Return ONLY a single complete \`\`\`${lang} ... \`\`\` fenced block.\nTask: ${prompt}\nErrors:\n${resCheck.issues.join('\n')}\nCode:\n\`\`\`${lang}\n${code}\n\`\`\``;
+          let fixedRaw = '';
+          const chainFix = await callKeyedAiChain({
+            messages: [
+              { role: 'system', content: fixSkillSys },
+              { role: 'user', content: fixPrompt },
+            ],
+            purpose: 'code',
+            maxTokens: 3200,
+            temperature: 0.15,
+            timeoutMs: 5500,
           });
-          const cleaned = String(fixedRes.text || '')
+          if (chainFix.ok && chainFix.text) fixedRaw = chainFix.text;
+
+          if (!fixedRaw) {
+            const gemFix = await runWithGeminiPool(async (ai) => {
+              const fixedRes = await ai.models.generateContent({
+                model: 'gemini-3.1-flash-lite',
+                contents: [{ role: 'user', parts: [{ text: fixPrompt }] }],
+                config: {
+                  maxOutputTokens: 3200,
+                  systemInstruction: fixSkillSys,
+                  thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+                },
+              });
+              return String(fixedRes.text || '').trim() || null;
+            });
+            if (gemFix) fixedRaw = gemFix;
+          }
+
+          const cleaned = String(fixedRaw || '')
+            .trim()
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
             .trim()
             .replace(/^```[\w+-]*\s*\n?/, '')
             .replace(/\n?```$/, '')
             .trim();
-          if (cleaned) code = cleaned;
+          if (cleaned && cleaned !== code) {
+            code = cleaned;
+          } else {
+            finishReason = 'no-progress';
+            break;
+          }
+          if (round === maxRounds) {
+            lastCheck = checkCode(code);
+            code = lastCheck.code;
+            finishReason = lastCheck.ok ? 'ok' : 'max-rounds';
+          }
         } catch {
+          finishReason = 'error';
           break;
         }
       }
+
+      if (!lastCheck.ok) {
+        send({
+          done: true,
+          round: roundsDone,
+          rounds: roundsDone,
+          maxRounds,
+          code,
+          ok: false,
+          issues: lastCheck.issues,
+          issueCount: lastCheck.issues.length,
+          compiler: lastCheck.compiler,
+          verifyMs: Math.max(1, Date.now() - t0),
+          reason: finishReason,
+        });
+      }
     } catch (e: any) {
-      send({ ok: false, error: e?.message || 'Fix failed' });
+      send({ done: true, ok: false, error: e?.message || 'Fix failed', issues: [e?.message || 'Fix failed'] });
     } finally {
       if (!res.writableEnded) {
         res.write('data: [DONE]\n\n');
@@ -640,80 +778,73 @@ Assistant answered: ${answer.slice(0, 1500)}`;
     });
   });
 
-  // 11. Live In-Game AI Commentary & Player Chat Reply
+  // 11. Live In-Game AI Commentary & Real Conversational Mid-Game Chat
   app.post('/api/games/chat', async (req, res) => {
     const gameId = String(req.body?.gameId || 'chess') as GameId;
     const gameTitle = String(req.body?.gameTitle || gameId).slice(0, 60);
-    const userMessage = String(req.body?.userMessage || '').trim().slice(0, 320);
-    const boardSummary = String(req.body?.boardSummary || '').trim().slice(0, 320);
-    const lastMove = String(req.body?.lastMove || '').trim().slice(0, 140);
+    const userMessage = String(req.body?.userMessage || '').trim().slice(0, 500);
+    const boardSummary = String(req.body?.boardSummary || '').trim().slice(0, 700);
+    const lastMove = String(req.body?.lastMove || '').trim().slice(0, 180);
+    const difficulty = String(req.body?.difficulty || 'medium').trim().slice(0, 32);
+    const scoreSummary = String(req.body?.scoreSummary || '').trim().slice(0, 120);
     const preferredLang = String(req.body?.lang || 'he');
     const lang = detectTextLang(userMessage || boardSummary, preferredLang) === 'he' ? 'he' : 'en';
+    const rawHistory = Array.isArray(req.body?.history) ? (req.body.history as GameChatHistoryItem[]) : [];
 
     const fallbackReply = generateGameChatReply({ gameId, userMessage: userMessage || lastMove, lang, boardSummary });
     if (!userMessage && !lastMove) {
       return res.json({ ok: true, reply: fallbackReply, provider: 'local' });
     }
 
-    const promptText =
-      lang === 'he'
-        ? `אתה Lokizenith AI, יריב חד, מצחיק וידידותי שמשחק עכשיו "${gameTitle}" נגד המשתמש.
-מצב הלוח: ${boardSummary || 'באמצע משחק'}
-מהלך אחרון: ${lastMove || 'אין'}
-הודעת השחקן: "${userMessage || 'תן הערה קצרה על המהלך האחרון'}"
-ענה במשפט 1–2 קצרים, שנונים ומותאמים בדיוק למשחק ולמה שהשחקן כתב (בעברית טבעית בלבד, בלי הקדמות).`
-        : `You are Lokizenith AI, a sharp, witty, friendly opponent currently playing "${gameTitle}" against the user.
-Board state: ${boardSummary || 'mid-game'}
-Last move: ${lastMove || 'none'}
-Player message: "${userMessage || 'React briefly to the latest move'}"
-Reply in 1–2 short, lively sentences tailored directly to the game and what the player said (natural English, no preamble).`;
+    const { systemInstruction, contents, openaiMessages } = buildGameChatMessages({
+      gameTitle,
+      lang,
+      boardSummary,
+      lastMove,
+      difficulty,
+      scoreSummary,
+      history: rawHistory,
+      userMessage,
+    });
 
     try {
-      const ai = getGenClient();
-      if (ai) {
-        const models = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.0-flash'];
-        for (const model of models) {
-          try {
-            const out = await ai.models.generateContent({
-              model,
-              contents: [{ role: 'user', parts: [{ text: promptText }] }],
-              config: { maxOutputTokens: 160, temperature: 0.85 },
-            });
-            const text = String(out.text || '').trim().replace(/^["']|["']$/g, '');
-            if (text && text.length >= 4) {
-              return res.json({ ok: true, reply: text.slice(0, 260), provider: model });
-            }
-          } catch {
-            // Try next model
-          }
-        }
-      }
-      const groqKey = process.env.GROQ_API_KEY;
-      if (groqKey) {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 5000);
+      const gemGame = await runWithGeminiPool(async (ai) => {
         try {
-          const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-            body: JSON.stringify({
-              model: 'llama-3.1-8b-instant',
-              messages: [{ role: 'user', content: promptText }],
-              max_tokens: 140,
-              temperature: 0.85,
-            }),
-            signal: ctrl.signal,
+          const out = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents,
+            config: { systemInstruction, maxOutputTokens: 450 },
           });
-          if (r.ok) {
-            const j: any = await r.json();
-            const text = String(j?.choices?.[0]?.message?.content || '').trim();
-            if (text && text.length >= 4) {
-              return res.json({ ok: true, reply: text.slice(0, 260), provider: 'groq' });
-            }
-          }
-        } finally {
-          clearTimeout(timer);
-        }
+          const text = String(out.text || '').trim().replace(/^["']|["']$/g, '');
+          if (text && text.length >= 4) return { text, provider: 'gemini-3.1-flash-lite' };
+        } catch {}
+
+        const out = await ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents,
+          config: {
+            systemInstruction,
+            maxOutputTokens: 500,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          },
+        });
+        const text = String(out.text || '').trim().replace(/^["']|["']$/g, '');
+        if (text && text.length >= 4) return { text, provider: 'gemini-4-hydrogen' };
+        return null;
+      });
+      if (gemGame) {
+        return res.json({ ok: true, reply: gemGame.text.slice(0, 700), provider: gemGame.provider });
+      }
+
+      const chainOut = await callKeyedAiChain({
+        messages: openaiMessages,
+        purpose: 'fast',
+        maxTokens: 320,
+        temperature: 0.75,
+        timeoutMs: 5000,
+      });
+      if (chainOut.ok && chainOut.text.length >= 4) {
+        return res.json({ ok: true, reply: chainOut.text.slice(0, 700), provider: chainOut.providerId || 'chain' });
       }
     } catch {
       // Fallback below
@@ -722,21 +853,180 @@ Reply in 1–2 short, lively sentences tailored directly to the game and what th
     return res.json({ ok: true, reply: fallbackReply, provider: 'local' });
   });
 
+  // 11b. Live URL & Website Intelligence Reader (Gemini urlContext + Safe Server Page Fetch)
+  app.post('/api/ai/url-analyze', async (req, res) => {
+    try {
+      const rawUrl = String(req.body?.url || '').trim();
+      const question = String(req.body?.question || '').trim().slice(0, 400);
+      const preferredLang = String(req.body?.lang || 'he');
+      const normalizedUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+      if (!isSafePublicHttpUrl(normalizedUrl)) {
+        return res.status(400).json({ ok: false, error: 'Please provide a valid public http(s) URL.' });
+      }
+
+      const lang = detectTextLang(question, preferredLang) === 'he' ? 'he' : 'en';
+      const isHe = lang === 'he';
+      const pageText = await fetchPageTextSafe(normalizedUrl, 12000, 4500);
+      let domain = '';
+      try {
+        domain = new URL(normalizedUrl).hostname.replace(/^www\./i, '');
+      } catch {
+        domain = normalizedUrl;
+      }
+
+      const urlPrompt = isHe
+        ? `נתח לעומק את הדף בכתובת ${normalizedUrl}.${question ? `\nשאלת המשתמש: ${question}` : ''}${
+            pageText ? `\n\nתוכן שנקרא ישירות מהאתר:\n"""${pageText.slice(0, 9000)}"""` : ''
+          }
+החזר תשובה בעברית ברורה ומובנית בפורמט JSON תקני בלבד:
+{
+  "title": "כותרת העמוד או הנושא",
+  "tldr": "תקציר חד וממוקד ב-2-3 משפטים",
+  "answer": "תשובה ישירה לשאלת המשתמש או ניתוח מרכזי",
+  "keyPoints": ["נקודת מפתח 1", "נקודת מפתח 2", "נקודת מפתח 3", "נקודת מפתח 4"],
+  "takeaways": ["מסקנה או המלצה מעשית 1", "מסקנה 2"],
+  "followUps": ["שאלת המשך חכמה 1", "שאלת המשך חכמה 2"]
+}`
+        : `Analyze the web page at ${normalizedUrl} thoroughly.${question ? `\nUser question: ${question}` : ''}${
+            pageText ? `\n\nDirect page text:\n"""${pageText.slice(0, 9000)}"""` : ''
+          }
+Return ONLY valid JSON in English:
+{
+  "title": "Page title or topic",
+  "tldr": "Sharp 2-3 sentence executive summary",
+  "answer": "Direct answer to the user's question or main breakdown",
+  "keyPoints": ["Key point 1", "Key point 2", "Key point 3", "Key point 4"],
+  "takeaways": ["Actionable takeaway 1", "Takeaway 2"],
+  "followUps": ["Smart follow-up question 1", "Smart follow-up question 2"]
+}`;
+
+      let rawText =
+        (await runWithGeminiPool(async (ai) => {
+          if (!pageText || pageText.length < 250) {
+            const urlResp = await ai.models.generateContent({
+              model: 'gemini-4-hydrogen',
+              contents: [{ role: 'user', parts: [{ text: urlPrompt }] }],
+              config: {
+                tools: [{ urlContext: {} }],
+                maxOutputTokens: 1600,
+                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              },
+            });
+            return String(urlResp.text || '').trim() || null;
+          }
+          const jsonResp = await ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: [{ role: 'user', parts: [{ text: urlPrompt }] }],
+            config: {
+              responseMimeType: 'application/json',
+              maxOutputTokens: 1600,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            },
+          });
+          return String(jsonResp.text || '').trim() || null;
+        })) || '';
+
+      if (!rawText && pageText) {
+        const chainUrl = await callKeyedAiChain({
+          messages: [{ role: 'user', content: urlPrompt }],
+          purpose: 'quality',
+          json: true,
+          maxTokens: 1600,
+          timeoutMs: 6500,
+        });
+        if (chainUrl.ok) rawText = chainUrl.text;
+      }
+
+      if (rawText) {
+        try {
+          const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+          const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return res.json({
+              ok: true,
+              url: normalizedUrl,
+              domain,
+              lang,
+              wordCount: pageText ? pageText.split(/\s+/).length : 0,
+              title: String(parsed.title || domain),
+              tldr: String(parsed.tldr || ''),
+              answer: String(parsed.answer || parsed.tldr || ''),
+              keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.slice(0, 6).map(String) : [],
+              takeaways: Array.isArray(parsed.takeaways) ? parsed.takeaways.slice(0, 4).map(String) : [],
+              followUps: Array.isArray(parsed.followUps) ? parsed.followUps.slice(0, 3).map(String) : [],
+            });
+          }
+
+          return res.json({
+            ok: true,
+            url: normalizedUrl,
+            domain,
+            lang,
+            wordCount: pageText ? pageText.split(/\s+/).length : 0,
+            title: domain,
+            tldr: rawText.slice(0, 360),
+            answer: rawText,
+            keyPoints: [],
+            takeaways: [],
+            followUps: [],
+          });
+        } catch {
+          // Fall back to direct page snippet below
+        }
+      }
+
+      if (pageText) {
+        return res.json({
+          ok: true,
+          url: normalizedUrl,
+          domain,
+          lang,
+          wordCount: pageText.split(/\s+/).length,
+          title: domain,
+          tldr: pageText.slice(0, 420),
+          answer: pageText.slice(0, 1200),
+          keyPoints: [],
+          takeaways: [],
+          followUps: [],
+        });
+      }
+
+      return res.status(502).json({
+        ok: false,
+        error: isHe ? 'לא ניתן היה לקרוא את האתר הזה כרגע.' : 'Could not read that website right now.',
+      });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || 'URL analysis failed' });
+    }
+  });
+
   // 12. Plugins, Deep Search, Reader, and LokiBot
   registerPluginRoutes(app, getAuthUser);
   registerDeepSearchRoutes(app);
   registerLokiBotRoutes(app, getAuthUser, async (systemPrompt, history) => {
-    const ai = getGenClient();
-    if (!ai) return 'LokiBot is online. Configure GEMINI_API_KEY to enable live bot responses.';
-    const contents = history.map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
-    const out = await ai.models.generateContent({
-      model: 'gemini-3.1-flash-lite-preview',
-      contents,
-      config: { systemInstruction: systemPrompt, maxOutputTokens: 1200 },
+    const gemReply = await runWithGeminiPool(async (ai) => {
+      const contents = history.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
+      const out = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-lite-preview',
+        contents,
+        config: { systemInstruction: systemPrompt, maxOutputTokens: 1200 },
+      });
+      return out.text && out.text.trim() ? out.text.trim() : null;
     });
-    return String(out.text || '').trim() || 'Done!';
+    if (gemReply) return gemReply;
+
+    const chainOut = await callKeyedAiChain({
+      messages: history.map((m) => ({ role: m.role, content: m.content })),
+      systemInstruction: systemPrompt,
+      purpose: 'fast',
+      maxTokens: 1200,
+      timeoutMs: 6500,
+    });
+    if (chainOut.ok && chainOut.text) return chainOut.text;
+    return 'LokiBot is online. Configure an API key (Gemini, Groq, Cerebras, OpenRouter, etc.) in server environment variables to enable live bot responses.';
   });
 }

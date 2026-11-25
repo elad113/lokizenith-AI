@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, onLog } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -21,13 +21,115 @@ import {
   getDocs,
   onSnapshot,
   serverTimestamp,
+  disableNetwork,
+  enableNetwork,
+  setLogLevel,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
+import {
+  FirestoreQuotaCircuitBreaker,
+  VaultSyncThrottle,
+  isClientFirestoreQuotaError,
+  withFirestoreTimeout,
+  type FirestoreQuotaStatus,
+  type StorageLike,
+} from './utils/firestoreQuotaGuard';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, (firebaseConfig as Record<string, string>).firestoreDatabaseId);
+const firestoreDbId = (firebaseConfig as Record<string, string>).firestoreDatabaseId || '(default)';
+export const db = getFirestore(app, firestoreDbId);
 export const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
+
+function getSafeBrowserStorage(): StorageLike | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch {
+    // restricted storage
+  }
+  return null;
+}
+
+const quotaBreaker = new FirestoreQuotaCircuitBreaker({
+  projectId: String((firebaseConfig as Record<string, string>).projectId || ''),
+  databaseId: firestoreDbId,
+  storage: getSafeBrowserStorage(),
+  onTrip: (status: FirestoreQuotaStatus) => {
+    try {
+      setLogLevel('silent');
+    } catch {}
+    disableNetwork(db).catch(() => {});
+    console.warn(`[LokiFirebase] ${status.message}`);
+  },
+  onReset: () => {
+    try {
+      setLogLevel('error');
+    } catch {}
+    enableNetwork(db).catch(() => {});
+  },
+});
+
+const vaultSyncThrottle = new VaultSyncThrottle();
+const ensuredUserUids = new Set<string>();
+const ENSURED_USER_KEY_PREFIX = 'lz.fb.userDocEnsured.';
+const ENSURED_USER_TTL_MS = 24 * 60 * 60_000;
+
+function isUserDocRecentlyEnsured(uid: string): boolean {
+  if (ensuredUserUids.has(uid)) return true;
+  const st = getSafeBrowserStorage();
+  if (!st) return false;
+  try {
+    const ts = Number(st.getItem(`${ENSURED_USER_KEY_PREFIX}${uid}`) || 0);
+    if (ts > 0 && Date.now() - ts < ENSURED_USER_TTL_MS) {
+      ensuredUserUids.add(uid);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+function markUserDocEnsured(uid: string): void {
+  ensuredUserUids.add(uid);
+  const st = getSafeBrowserStorage();
+  if (!st) return;
+  try {
+    st.setItem(`${ENSURED_USER_KEY_PREFIX}${uid}`, String(Date.now()));
+  } catch {}
+}
+
+function handlePossibleQuotaError(error: unknown): boolean {
+  if (isClientFirestoreQuotaError(error)) {
+    quotaBreaker.trip(error);
+    return true;
+  }
+  return false;
+}
+
+// Intercept @firebase/firestore internal stream logs so RESOURCE_EXHAUSTED or
+// "Using maximum backoff delay" immediately pauses Firestore network retries
+// instead of looping forever in the browser console.
+try {
+  onLog(
+    (log) => {
+      const text = `${log.message || ''} ${(log.args || []).map((a) => String(a ?? '')).join(' ')}`;
+      if (isClientFirestoreQuotaError(text)) {
+        quotaBreaker.trip(text);
+      }
+    },
+    { level: 'warn' }
+  );
+} catch {
+  // ignore if SDK environment does not support custom log handlers
+}
+
+if (quotaBreaker.isPaused()) {
+  try {
+    setLogLevel('silent');
+  } catch {}
+  disableNetwork(db).catch(() => {});
+}
 
 export const OperationType = {
   CREATE: 'create',
@@ -84,9 +186,11 @@ export function handleFirestoreError(
 }
 
 async function testConnection() {
+  if (quotaBreaker.isPaused()) return;
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    await withFirestoreTimeout(getDocFromServer(doc(db, 'test', 'connection')), 6000);
   } catch (error) {
+    if (handlePossibleQuotaError(error)) return;
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration.');
     }
@@ -98,6 +202,7 @@ const BOOTSTRAPPED_ADMIN_EMAIL = 'benczelelad@gmail.com';
 const authListeners: Array<(user: any) => void> = [];
 
 async function ensureUserDocument(user: User) {
+  if (quotaBreaker.isPaused() || isUserDocRecentlyEnsured(user.uid)) return;
   const userPath = `users/${user.uid}`;
   const isBootstrappedAdmin =
     Boolean(user.emailVerified) &&
@@ -105,32 +210,40 @@ async function ensureUserDocument(user: User) {
 
   try {
     const ref = doc(db, 'users', user.uid);
-    const snap = await getDoc(ref);
+    const snap = await withFirestoreTimeout(getDoc(ref), 6000);
     if (!snap.exists()) {
       const displayName = String(user.displayName || user.email?.split('@')[0] || 'Lokizen User')
         .trim()
         .slice(0, 100);
-      await setDoc(ref, {
-        uid: user.uid,
-        displayName: displayName || 'Lokizen User',
-        role: isBootstrappedAdmin ? 'admin' : 'user',
-        quotaTokens: isBootstrappedAdmin ? 100_000_000 : 1_000_000,
-        usedTokens: 0,
-        rateLimitRpm: isBootstrappedAdmin ? 1000 : 120,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await withFirestoreTimeout(
+        setDoc(ref, {
+          uid: user.uid,
+          displayName: displayName || 'Lokizen User',
+          role: isBootstrappedAdmin ? 'admin' : 'user',
+          quotaTokens: isBootstrappedAdmin ? 100_000_000 : 1_000_000,
+          usedTokens: 0,
+          rateLimitRpm: isBootstrappedAdmin ? 1000 : 120,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        6000
+      );
 
       if (user.email) {
         const privRef = doc(db, 'users', user.uid, 'private', 'info');
-        await setDoc(privRef, {
-          uid: user.uid,
-          email: String(user.email).slice(0, 254),
-          createdAt: serverTimestamp(),
-        });
+        await withFirestoreTimeout(
+          setDoc(privRef, {
+            uid: user.uid,
+            email: String(user.email).slice(0, 254),
+            createdAt: serverTimestamp(),
+          }),
+          6000
+        );
       }
     }
+    markUserDocEnsured(user.uid);
   } catch (error) {
+    if (handlePossibleQuotaError(error)) return;
     if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
       handleFirestoreError(error, OperationType.WRITE, userPath);
     }
@@ -187,9 +300,19 @@ export const LokiFirebaseBridge = {
       if (idx >= 0) authListeners.splice(idx, 1);
     };
   },
+  isQuotaPaused() {
+    return quotaBreaker.isPaused();
+  },
+  getQuotaStatus() {
+    return quotaBreaker.getStatus();
+  },
+  resetQuotaCooldown() {
+    quotaBreaker.reset();
+    return quotaBreaker.getStatus();
+  },
   async signInWithGoogle() {
     const result = await signInWithPopup(auth, googleProvider);
-    await ensureUserDocument(result.user);
+    // onAuthStateChanged already calls ensureUserDocument once per session
     return serializeAuthUser(result.user);
   },
   async signOutUser() {
@@ -209,26 +332,30 @@ export const LokiFirebaseBridge = {
     quotaTokens: number;
     rateLimitRpm: number;
   }) {
-    if (!auth.currentUser) return false;
+    if (!auth.currentUser || quotaBreaker.isPaused()) return false;
     const path = `apiKeys/${keyMeta.id}`;
     try {
-      await setDoc(doc(db, 'apiKeys', keyMeta.id), {
-        id: String(keyMeta.id).slice(0, 128),
-        ownerId: auth.currentUser.uid,
-        name: String(keyMeta.name || 'Lokizen API Key').slice(0, 80),
-        keyHash: String(keyMeta.keyHash),
-        keyPrefix: String(keyMeta.keyPrefix).slice(0, 24),
-        keyLast4: String(keyMeta.keyLast4).slice(0, 4),
-        status: keyMeta.status === 'revoked' ? 'revoked' : 'active',
-        requestsCount: Math.max(0, Math.floor(Number(keyMeta.requestsCount) || 0)),
-        usedTokens: Math.max(0, Math.floor(Number(keyMeta.usedTokens) || 0)),
-        quotaTokens: Math.max(0, Math.floor(Number(keyMeta.quotaTokens) || 1_000_000)),
-        rateLimitRpm: Math.max(1, Math.floor(Number(keyMeta.rateLimitRpm) || 120)),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await withFirestoreTimeout(
+        setDoc(doc(db, 'apiKeys', keyMeta.id), {
+          id: String(keyMeta.id).slice(0, 128),
+          ownerId: auth.currentUser.uid,
+          name: String(keyMeta.name || 'Lokizen API Key').slice(0, 80),
+          keyHash: String(keyMeta.keyHash),
+          keyPrefix: String(keyMeta.keyPrefix).slice(0, 24),
+          keyLast4: String(keyMeta.keyLast4).slice(0, 4),
+          status: keyMeta.status === 'revoked' ? 'revoked' : 'active',
+          requestsCount: Math.max(0, Math.floor(Number(keyMeta.requestsCount) || 0)),
+          usedTokens: Math.max(0, Math.floor(Number(keyMeta.usedTokens) || 0)),
+          quotaTokens: Math.max(0, Math.floor(Number(keyMeta.quotaTokens) || 1_000_000)),
+          rateLimitRpm: Math.max(1, Math.floor(Number(keyMeta.rateLimitRpm) || 120)),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        7000
+      );
       return true;
     } catch (error) {
+      if (handlePossibleQuotaError(error)) return false;
       if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
         handleFirestoreError(error, OperationType.CREATE, path);
       }
@@ -236,20 +363,24 @@ export const LokiFirebaseBridge = {
     }
   },
   async revokeKeyInFirestore(keyId: string) {
-    if (!auth.currentUser) return false;
+    if (!auth.currentUser || quotaBreaker.isPaused()) return false;
     const path = `apiKeys/${keyId}`;
     try {
       const ref = doc(db, 'apiKeys', keyId);
-      const snap = await getDoc(ref);
+      const snap = await withFirestoreTimeout(getDoc(ref), 6000);
       if (snap.exists()) {
-        await updateDoc(ref, {
-          name: snap.data().name,
-          status: 'revoked',
-          updatedAt: serverTimestamp(),
-        });
+        await withFirestoreTimeout(
+          updateDoc(ref, {
+            name: snap.data().name,
+            status: 'revoked',
+            updatedAt: serverTimestamp(),
+          }),
+          7000
+        );
       }
       return true;
     } catch (error) {
+      if (handlePossibleQuotaError(error)) return false;
       if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
         handleFirestoreError(error, OperationType.UPDATE, path);
       }
@@ -257,12 +388,13 @@ export const LokiFirebaseBridge = {
     }
   },
   async deleteKeyInFirestore(keyId: string) {
-    if (!auth.currentUser) return false;
+    if (!auth.currentUser || quotaBreaker.isPaused()) return false;
     const path = `apiKeys/${keyId}`;
     try {
-      await deleteDoc(doc(db, 'apiKeys', keyId));
+      await withFirestoreTimeout(deleteDoc(doc(db, 'apiKeys', keyId)), 7000);
       return true;
     } catch (error) {
+      if (handlePossibleQuotaError(error)) return false;
       if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
         handleFirestoreError(error, OperationType.DELETE, path);
       }
@@ -280,25 +412,29 @@ export const LokiFirebaseBridge = {
     healthStatus: 'healthy' | 'degraded' | 'down' | 'untested';
     lastLatencyMs: number;
   }) {
-    if (!auth.currentUser) return false;
+    if (!auth.currentUser || quotaBreaker.isPaused()) return false;
     const path = `providers/${prov.id}`;
     try {
-      await setDoc(doc(db, 'providers', prov.id), {
-        id: String(prov.id).slice(0, 128),
-        name: String(prov.name).slice(0, 100),
-        baseUrl: String(prov.baseUrl).slice(0, 300),
-        enabled: Boolean(prov.enabled),
-        priority: Math.max(1, Math.min(1000, Math.floor(Number(prov.priority) || 1))),
-        models: (prov.models || ['lokizen-4.0-stark']).slice(0, 20).map(m => String(m).slice(0, 100)),
-        credentialCount: Math.max(0, Math.min(100, Math.floor(Number(prov.credentialCount) || 0))),
-        healthStatus: prov.healthStatus || 'healthy',
-        lastLatencyMs: Math.max(0, Math.floor(Number(prov.lastLatencyMs) || 0)),
-        createdBy: auth.currentUser.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await withFirestoreTimeout(
+        setDoc(doc(db, 'providers', prov.id), {
+          id: String(prov.id).slice(0, 128),
+          name: String(prov.name).slice(0, 100),
+          baseUrl: String(prov.baseUrl).slice(0, 300),
+          enabled: Boolean(prov.enabled),
+          priority: Math.max(1, Math.min(1000, Math.floor(Number(prov.priority) || 1))),
+          models: (prov.models || ['lokizen-4.0-stark']).slice(0, 20).map(m => String(m).slice(0, 100)),
+          credentialCount: Math.max(0, Math.min(100, Math.floor(Number(prov.credentialCount) || 0))),
+          healthStatus: prov.healthStatus || 'healthy',
+          lastLatencyMs: Math.max(0, Math.floor(Number(prov.lastLatencyMs) || 0)),
+          createdBy: auth.currentUser.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        7000
+      );
       return true;
     } catch (error) {
+      if (handlePossibleQuotaError(error)) return false;
       if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
         handleFirestoreError(error, OperationType.WRITE, path);
       }
@@ -306,13 +442,14 @@ export const LokiFirebaseBridge = {
     }
   },
   async listUserKeysFromFirestore() {
-    if (!auth.currentUser) return [];
+    if (!auth.currentUser || quotaBreaker.isPaused()) return [];
     const path = 'apiKeys';
     try {
       const q = query(collection(db, 'apiKeys'), where('ownerId', '==', auth.currentUser.uid));
-      const snap = await getDocs(q);
+      const snap = await withFirestoreTimeout(getDocs(q), 6000);
       return snap.docs.map(d => d.data());
     } catch (error) {
+      if (handlePossibleQuotaError(error)) return [];
       if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
         handleFirestoreError(error, OperationType.LIST, path);
       }
@@ -320,7 +457,7 @@ export const LokiFirebaseBridge = {
     }
   },
   subscribeUserKeys(cb: (keys: any[]) => void) {
-    if (!auth.currentUser) return () => {};
+    if (!auth.currentUser || quotaBreaker.isPaused()) return () => {};
     const path = 'apiKeys';
     const q = query(collection(db, 'apiKeys'), where('ownerId', '==', auth.currentUser.uid));
     return onSnapshot(
@@ -329,6 +466,7 @@ export const LokiFirebaseBridge = {
         cb(snap.docs.map(d => d.data()));
       },
       error => {
+        if (handlePossibleQuotaError(error)) return;
         handleFirestoreError(error, OperationType.LIST, path);
       }
     );
@@ -341,8 +479,10 @@ export const LokiFirebaseBridge = {
     settings?: Record<string, any>;
     recentTitles?: string[];
   }) {
-    if (!auth.currentUser) return false;
+    if (!auth.currentUser || quotaBreaker.isPaused()) return false;
     const uid = auth.currentUser.uid;
+    // Skip redundant/high-frequency writes to stay well within Firestore free-tier daily write units
+    if (!vaultSyncThrottle.shouldSync(uid, summary)) return false;
     const docPath = `accountVaults/${uid}`;
     const plan = summary.plan === 'ultimate' ? 'ultimate' : summary.plan === 'pro' ? 'pro' : 'free';
     const recentTitles = (Array.isArray(summary.recentTitles) ? summary.recentTitles : [])
@@ -359,31 +499,39 @@ export const LokiFirebaseBridge = {
     }
     try {
       const ref = doc(db, 'accountVaults', uid);
-      const snap = await getDoc(ref);
+      const snap = await withFirestoreTimeout(getDoc(ref), 6000);
       if (!snap.exists()) {
-        await setDoc(ref, {
-          uid,
-          username: String(summary.username || 'User').slice(0, 64),
-          plan,
-          convsCount: Math.max(0, Math.floor(Number(summary.convsCount) || 0)),
-          schemaVersion: Math.max(1, Math.floor(Number(summary.schemaVersion) || 3)),
-          settings: settingsObj,
-          recentTitles,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await withFirestoreTimeout(
+          setDoc(ref, {
+            uid,
+            username: String(summary.username || 'User').slice(0, 64),
+            plan,
+            convsCount: Math.max(0, Math.floor(Number(summary.convsCount) || 0)),
+            schemaVersion: Math.max(1, Math.floor(Number(summary.schemaVersion) || 3)),
+            settings: settingsObj,
+            recentTitles,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }),
+          7000
+        );
       } else {
-        await updateDoc(ref, {
-          username: String(summary.username || 'User').slice(0, 64),
-          convsCount: Math.max(0, Math.floor(Number(summary.convsCount) || 0)),
-          schemaVersion: Math.max(1, Math.floor(Number(summary.schemaVersion) || 3)),
-          settings: settingsObj,
-          recentTitles,
-          updatedAt: serverTimestamp(),
-        });
+        await withFirestoreTimeout(
+          updateDoc(ref, {
+            username: String(summary.username || 'User').slice(0, 64),
+            convsCount: Math.max(0, Math.floor(Number(summary.convsCount) || 0)),
+            schemaVersion: Math.max(1, Math.floor(Number(summary.schemaVersion) || 3)),
+            settings: settingsObj,
+            recentTitles,
+            updatedAt: serverTimestamp(),
+          }),
+          7000
+        );
       }
+      vaultSyncThrottle.markSynced(uid, summary);
       return true;
     } catch (error) {
+      if (handlePossibleQuotaError(error)) return false;
       if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
         handleFirestoreError(error, OperationType.WRITE, docPath);
       }
@@ -391,13 +539,14 @@ export const LokiFirebaseBridge = {
     }
   },
   async loadPersonalVaultFromCloud() {
-    if (!auth.currentUser) return null;
+    if (!auth.currentUser || quotaBreaker.isPaused()) return null;
     const uid = auth.currentUser.uid;
     const docPath = `accountVaults/${uid}`;
     try {
-      const snap = await getDoc(doc(db, 'accountVaults', uid));
+      const snap = await withFirestoreTimeout(getDoc(doc(db, 'accountVaults', uid)), 6000);
       return snap.exists() ? snap.data() : null;
     } catch (error) {
+      if (handlePossibleQuotaError(error)) return null;
       if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
         handleFirestoreError(error, OperationType.GET, docPath);
       }
@@ -405,7 +554,7 @@ export const LokiFirebaseBridge = {
     }
   },
   subscribePersonalVault(cb: (vaultData: any) => void) {
-    if (!auth.currentUser) return () => {};
+    if (!auth.currentUser || quotaBreaker.isPaused()) return () => {};
     const uid = auth.currentUser.uid;
     const docPath = `accountVaults/${uid}`;
     return onSnapshot(
@@ -414,6 +563,7 @@ export const LokiFirebaseBridge = {
         if (snap.exists()) cb(snap.data());
       },
       error => {
+        if (handlePossibleQuotaError(error)) return;
         if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
           handleFirestoreError(error, OperationType.GET, docPath);
         }
@@ -422,6 +572,9 @@ export const LokiFirebaseBridge = {
   },
   async syncAdminVaultToCloud(payload: { schemaVersion: number; accounts: any[] }) {
     if (!auth.currentUser) throw new Error('Sign in with Google Admin (@EladBenczel) to sync to Firebase Cloud.');
+    if (quotaBreaker.isPaused()) {
+      throw new Error(quotaBreaker.getStatus().message);
+    }
     const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
     let synced = 0;
     for (const acc of accounts) {
@@ -483,12 +636,15 @@ export const LokiFirebaseBridge = {
           updatedAt: serverTimestamp(),
         };
         if (!snap.exists()) {
-          await setDoc(ref, { ...recordPayload, createdAt: serverTimestamp() });
+          await withFirestoreTimeout(setDoc(ref, { ...recordPayload, createdAt: serverTimestamp() }), 7000);
         } else {
-          await updateDoc(ref, recordPayload);
+          await withFirestoreTimeout(updateDoc(ref, recordPayload), 7000);
         }
         synced++;
       } catch (error) {
+        if (handlePossibleQuotaError(error)) {
+          throw new Error(quotaBreaker.getStatus().message);
+        }
         if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
           handleFirestoreError(error, OperationType.WRITE, docPath);
         }
@@ -499,9 +655,12 @@ export const LokiFirebaseBridge = {
   },
   async restoreAdminVaultFromCloud() {
     if (!auth.currentUser) throw new Error('Sign in with Google Admin (@EladBenczel) to read Firebase Cloud.');
+    if (quotaBreaker.isPaused()) {
+      throw new Error(quotaBreaker.getStatus().message);
+    }
     const path = 'platformVaultAccounts';
     try {
-      const snap = await getDocs(collection(db, path));
+      const snap = await withFirestoreTimeout(getDocs(collection(db, path)), 7000);
       const users: Record<string, any> = {};
       const userData: Record<string, any> = {};
       for (const d of snap.docs) {
@@ -540,6 +699,9 @@ export const LokiFirebaseBridge = {
       }
       return { ok: true, count: Object.keys(users).length, store: { users, userData } };
     } catch (error) {
+      if (handlePossibleQuotaError(error)) {
+        throw new Error(quotaBreaker.getStatus().message);
+      }
       if (error instanceof Error && error.message.includes('Missing or insufficient permissions')) {
         handleFirestoreError(error, OperationType.LIST, path);
       }

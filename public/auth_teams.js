@@ -1150,7 +1150,13 @@ async function flushLiveSyncNow(useBeacon = false){
       }
     }
     try {
-      if (window.LokiFirebase && typeof window.LokiFirebase.syncPersonalVaultToCloud === 'function' && window.LokiFirebase.getCurrentUser && window.LokiFirebase.getCurrentUser()) {
+      if (
+        window.LokiFirebase &&
+        typeof window.LokiFirebase.syncPersonalVaultToCloud === 'function' &&
+        !(typeof window.LokiFirebase.isQuotaPaused === 'function' && window.LokiFirebase.isQuotaPaused()) &&
+        window.LokiFirebase.getCurrentUser &&
+        window.LokiFirebase.getCurrentUser()
+      ) {
         const convsList = Array.isArray(payload.convs) ? payload.convs : [];
         window.LokiFirebase.syncPersonalVaultToCloud({
           username: state.user.username || 'User',

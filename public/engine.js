@@ -385,28 +385,33 @@ async function runWithTypewriterPacer(upstreamFn, userOnToken, signal, minWriteM
   if (typeof userOnToken !== 'function' || !(minWriteMs > 0)) {
     return await upstreamFn(userOnToken || NOOP);
   }
+  const isFastPacer = minWriteMs <= 300;
   let targetText = '';
   let shownLen = 0;
   let upstreamFinished = false;
   let doneAt = 0;
   let remainingAtDone = 0;
-  const TICK_MS = 20;
+  const TICK_MS = isFastPacer ? 14 : 20;
 
   const advanceTick = () => {
     if (!targetText.length || shownLen >= targetText.length) return;
     let nextLen;
     if (shownLen === 0) {
       // Paint an immediate crisp opening slice so live typing begins on frame 1 with zero stall
-      nextLen = Math.min(targetText.length, 10);
+      nextLen = Math.min(targetText.length, isFastPacer ? 18 : 10);
     } else if (!upstreamFinished) {
       const rem = targetText.length - shownLen;
-      const step = rem > 240 ? Math.ceil(rem / 10) : rem > 60 ? Math.ceil(rem / 6) : Math.max(2, Math.ceil(rem / 3));
-      nextLen = shownLen + step;
+      const step = isFastPacer
+        ? (rem > 120 ? Math.ceil(rem / 4) : rem > 30 ? Math.ceil(rem / 2.5) : rem)
+        : (rem > 240 ? Math.ceil(rem / 10) : rem > 60 ? Math.ceil(rem / 6) : Math.max(2, Math.ceil(rem / 3)));
+      nextLen = shownLen + Math.max(2, step);
     } else {
-      const totalWin = typewriterDurationMs(remainingAtDone || (targetText.length - shownLen), 420, 2400);
+      const drainMin = isFastPacer ? Math.min(120, minWriteMs) : 420;
+      const drainMax = isFastPacer ? Math.min(300, Math.max(180, minWriteMs)) : 2400;
+      const totalWin = typewriterDurationMs(remainingAtDone || (targetText.length - shownLen), drainMin, drainMax);
       const left = Math.max(TICK_MS, totalWin - (performance.now() - doneAt));
       const ticksLeft = Math.max(1, Math.ceil(left / TICK_MS));
-      nextLen = shownLen + Math.max(3, Math.ceil((targetText.length - shownLen) / ticksLeft));
+      nextLen = shownLen + Math.max(isFastPacer ? 12 : 3, Math.ceil((targetText.length - shownLen) / ticksLeft));
     }
     nextLen = Math.min(targetText.length, nextLen);
     if (nextLen > shownLen) {
@@ -432,7 +437,7 @@ async function runWithTypewriterPacer(upstreamFn, userOnToken, signal, minWriteM
     upstreamFinished = true;
     doneAt = performance.now();
     remainingAtDone = Math.max(0, targetText.length - shownLen);
-    const hardStop = doneAt + 3200;
+    const hardStop = doneAt + (isFastPacer ? 360 : 3200);
     while (shownLen < targetText.length) {
       if (signal && signal.aborted) throw abortErr();
       if (performance.now() > hardStop || document.hidden) {
@@ -462,26 +467,31 @@ async function chat(messages, opts = {}){
   const isUltra = level === 4;
   const isTurbo = level === 0 || isUltra;
   // Smooth typing that never delays text (see runWithTypewriterPacer).
-  // Callers may pass minWriteMs: 0 to paint tokens as they arrive (settings / reduce-motion).
-  const defaultMinWrite = 1000;
+  const defaultMinWrite = 180;
   const minWriteMs = opts.minWriteMs ?? defaultMinWrite;
 
   const executeChatCore = async (internalOnToken) => {
+    const customMs = Number(opts.timeout) > 0 ? Number(opts.timeout) : 0;
+    const fastFail = !!opts.fastFail;
     // 1. Always try server-side SSE stream first for non-JSON requests
     if (!opts.json && stream){
       try {
-        const out = await streamBackendChat(messages, {...opts, onToken: internalOnToken, tier, level, timeout: 26000}, signal);
+        const out = await streamBackendChat(messages, {...opts, onToken: internalOnToken, tier, level, timeout: customMs || 26000}, signal);
         if (out) return out;
       } catch(e){
         if ((signal && signal.aborted) || isQuotaHardLockErr(e)) throw e;
       }
     } else {
       try {
-        const out = await callBackendGemini(messages, {...opts, onToken: internalOnToken, tier, level, timeout: 28000}, signal);
+        const out = await callBackendGemini(messages, {...opts, onToken: internalOnToken, tier, level, timeout: customMs || 28000}, signal);
         if (out) return out;
       } catch(e){
         if ((signal && signal.aborted) || isQuotaHardLockErr(e)) throw e;
       }
+    }
+
+    if (fastFail && customMs) {
+      throw new Error('Fast grading timeout');
     }
 
     const baseOrder = (level >= 1 && level !== 4 ? ORDER_DEEP : ORDER)[tier].slice();
@@ -489,7 +499,7 @@ async function chat(messages, opts = {}){
     let order = rot === 1 ? [baseOrder[1], baseOrder[0], ...baseOrder.slice(2)] : baseOrder;
     if (opts.prefer) order = [opts.prefer, ...order.filter(m => m !== opts.prefer)];
     if (opts.lane != null){ const fast = ORDER[tier].slice(0, 2), pick = fast[opts.lane % 2]; order = [pick, ...order.filter(m => m !== pick)]; }
-    const ms = opts.timeout || (isTurbo ? 14000 : 24000);
+    const ms = customMs || (isTurbo ? 14000 : 24000);
 
     // 2. Live streaming AI cluster (Mistral-Small-3.2-24B, Meta-Llama-3.3-70B, gpt-oss-120b, gpt-oss-20b)
     const now = Date.now();
@@ -504,12 +514,17 @@ async function chat(messages, opts = {}){
       } catch(e){
         if ((signal && signal.aborted) || isQuotaHardLockErr(e)) throw e;
         failModel(model, e);
+        if (fastFail) break;
       }
+    }
+
+    if (fastFail) {
+      throw new Error('Fast grading timeout');
     }
 
     // 3. Server-side /api/chat guaranteed multi-layer fallback
     try {
-      const out = await callBackendGemini(messages, {...opts, onToken: internalOnToken, tier, level, timeout: 32000}, signal);
+      const out = await callBackendGemini(messages, {...opts, onToken: internalOnToken, tier, level, timeout: customMs || 32000}, signal);
       if (out) return out;
     } catch(e){
       if ((signal && signal.aborted) || isQuotaHardLockErr(e)) throw e;
@@ -521,7 +536,7 @@ async function chat(messages, opts = {}){
         model: 'openai',
         seed: Math.floor(Math.random() * 1e9),
         messages: flatten(messages)
-      }, 15000, signal);
+      }, customMs || 15000, signal);
       if (stream && out) internalOnToken(out, out);
       if (out) return out;
     } catch(e){
@@ -546,11 +561,13 @@ function flatten(messages){
 /* chat that must return JSON */
 async function chatJSON(messages, opts = {}){
   let txt = '';
-  for (let i = 0; i < 2; i++){
+  const attempts = opts.fastFail ? 1 : 2;
+  for (let i = 0; i < attempts; i++){
     txt = await chat(messages, {...opts, onToken: undefined, json:true, temperature: opts.temperature ?? 0.4});
     const j = parseJSON(txt);
     if (j) return j;
   }
+  if (opts.fastFail) throw new Error('Could not understand the structured response.');
   // repair pass: ask a model to fix the broken JSON
   try {
     const fixed = await chat([{role:'system', content:'Fix this into strictly valid JSON. Output ONLY the JSON.'}, {role:'user', content: String(txt).slice(0, 12000)}], {...opts, onToken: undefined, json:true, temperature:0, level:0, _noConsume:true});
@@ -1456,32 +1473,50 @@ async function searchReddit(query, n = 3, signal){
   return out;
 }
 
-async function searchBackendAggregator(query, n = 250, signal, fast = false, extra = {}){
+async function searchBackendAggregator(query, n = 140, signal, fast = false, extra = {}){
   try {
     const body = fast
       ? {query, limit: n, fast: true}
-      : {query, limit: Math.max(245, n), ...(extra.deep ? {deep: true} : {})};
+      : {query, limit: Math.max(120, n), ...(extra.deep ? {deep: true} : {})};
     const r = await tfetch('/api/search', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
-    }, extra.deep ? 20000 : (fast ? 3500 : 12000), signal);
+    }, extra.deep ? 20000 : (fast ? 6800 : 14000), signal);
     if (r.ok){
       const j = await r.json();
-      if (j && Array.isArray(j.results)) return j.results;
+      if (j && Array.isArray(j.results)) {
+        if (extra && typeof extra.onMeta === 'function') {
+          extra.onMeta({
+            groundedAnswer: j.groundedAnswer || '',
+            queriesUsed: j.queriesUsed || [],
+            enginesUsed: j.enginesUsed || [],
+            scannedCount: j.scannedCount || j.results.length,
+            uniqueCount: j.uniqueCount || j.results.length,
+            distinctDomains: j.distinctDomains || 0,
+            avgTrust: j.avgTrust || 0,
+            elapsedMs: j.elapsedMs || 0
+          });
+        }
+        return j.results;
+      }
     }
   } catch(e){ if (e && e.name === 'AbortError') throw e; }
   return [];
 }
 
-async function search(query, n = 240, signal, opts = {}){
+async function search(query, n = 140, signal, opts = {}){
   const cleanQuery = String(query || '').replace(/^\/(?:search|web|research|factcheck)\s+/i, '').trim() || String(query || '').trim();
-  const target = opts.fast ? Math.max(20, n || 60) : Math.max(240, n || 240);
+  const target = opts.fast ? Math.max(25, n || 60) : Math.max(120, n || 140);
   const enabled = opts.fast ? [] : (opts.engines || ['wiki', 'hn']);
-  const tasks = [searchBackendAggregator(cleanQuery, target, signal, !!opts.fast)];
-  // Only run CORS-friendly live browser fallbacks; Reddit, ArXiv, OpenAlex, Crossref, DDG, Bing are already aggregated server-side in /api/search
-  if (enabled.includes('wiki')) tasks.push(searchWikipedia(cleanQuery, 20, signal));
-  if (enabled.includes('hn')) tasks.push(searchHackerNews(cleanQuery, 20, signal));
+  let backendMeta = null;
+  const tasks = [searchBackendAggregator(cleanQuery, target, signal, !!opts.fast, {
+    deep: !!opts.deep,
+    onMeta: (m) => { backendMeta = m; if (opts.onMeta) opts.onMeta(m); }
+  })];
+  // Only run CORS-friendly live browser fallbacks; Google Search Grounding, Bing, DuckDuckGo, Google News, Reddit, OpenAlex, Crossref are already aggregated server-side in /api/search
+  if (enabled.includes('wiki')) tasks.push(searchWikipedia(cleanQuery, 15, signal));
+  if (enabled.includes('hn')) tasks.push(searchHackerNews(cleanQuery, 15, signal));
 
   const groups = await Promise.all(tasks.map(p => p.catch(e => { if (e && e.name === 'AbortError') throw e; return []; })));
   const canonKey = (rawUrl) => {
@@ -1510,7 +1545,7 @@ async function search(query, n = 240, signal, opts = {}){
       out.push(item);
     }
   };
-  // Backend verified results first (already deduplicated & credibility-ranked), then client live engines
+  // Backend verified results first (Google Search Grounding + Bing + DDG + Google News + Wiki/Tech)
   for (const item of (groups[0] || [])){
     if (out.length >= target) break;
     pushUnique(item);
@@ -1522,7 +1557,9 @@ async function search(query, n = 240, signal, opts = {}){
       if (i < g.length) pushUnique(g[i]);
     }
   }
-  return out.slice(0, target);
+  const finalArr = out.slice(0, target);
+  if (backendMeta) finalArr._meta = backendMeta;
+  return finalArr;
 }
 
 async function deepSearch(query, opts = {}){

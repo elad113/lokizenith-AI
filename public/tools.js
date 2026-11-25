@@ -10,30 +10,268 @@ const pick = (lg, o) => o[lg] || o.en;
 const imgsOf = um => ((um && um.attachments) || []).filter(a => a.kind === 'image');
 const lab = (o) => A.registerLab(Object.assign({isNew: true}, o));
 
-/* ======================= 0. QUIZ IN CHAT (both) ======================= */
-const QUIZ_RX = /\b(quiz|test me|trivia)\b|(create|make|give me|build).{0,20}\b(quiz|test)\b|בוחן|חידון|תבחן אותי|מבדק|اختبار|اختبرني/i;
-function quizTest(tx){ return QUIZ_RX.test(tx) && !/\b(unit test|test case|jest|pytest)\b/i.test(tx) && tx.length < 300; }
+/* ======================= 0. QUIZ / TEST IN CHAT (both) ======================= */
+const CODE_TEST_EXCLUDE_RX = /\b(unit\s*tests?|test\s*cases?|jest|pytest|vitest|mocha|cypress|playwright|node:test|npm\s+test|tsx\s+--test)\b/i;
+const QUIZ_RX = /^\s*\/(test|quiz|exam)\b|\b(quiz|trivia|test\s+me|quiz\s+me|exam\s+on|exam\s+about|test\s+on|test\s+about)\b|(create|make|give\s+me|build|generate|write|prepare).{0,35}\b(quiz|test|exam|questions?)\b|\b\d{1,2}\s*(?:-|\s)?\s*(questions?|qs?)\s+(quiz|test|exam)\b|בוחן|מבחן|חידון|תבחן\s*אותי|בחן\s*אותי|מבדק|שאלון|תעשה\s+(?:לי\s+)?מבחן|תכין\s+(?:לי\s+)?מבחן|צור\s+(?:לי\s+)?מבחן|اختبار|اختبرني|امتحان/i;
+function quizTest(tx){
+  const s = String(tx || '').trim();
+  if (!s || s.length > 420) return false;
+  if (CODE_TEST_EXCLUDE_RX.test(s)) return false;
+  return QUIZ_RX.test(s);
+}
+function parseQuizRequestSpecClient(rawText, defaultCount){
+  const text = String(rawText || '').trim();
+  const lg = langOf(text);
+  let requestedCount = null;
+  const patterns = [
+    /(?:between\s+\d+\s*(?:and|-|to)\s*)?(\d{1,2})\s*(?:questions?|qs?\b|שאלות|שאלה|أسئلة|سؤال)/i,
+    /(?:עם|של|בן|בת|with|of|containing|having)\s+(\d{1,2})\s*(?:questions?|qs?\b|שאלות|שאלה|أسئلة|سؤال)/i,
+    /(?:quiz|test|exam|מבחן|בוחן|חידון|מבדק|اختبار)\s+(?:של|עם|with|of)\s+(\d{1,2})/i
+  ];
+  for (const rx of patterns){
+    const m = text.match(rx);
+    if (m && m[1]){
+      const val = parseInt(m[1], 10);
+      if (Number.isFinite(val) && val >= 1 && val <= 99){ requestedCount = val; break; }
+    }
+  }
+  const fallback = Number.isFinite(+defaultCount) ? +defaultCount : 8;
+  const baseN = requestedCount !== null ? requestedCount : fallback;
+  const n = Math.max(5, Math.min(20, baseN));
+
+  const wantsOpen = /\b(open(?:\s|-)?(?:ended)?\s*questions?|written\s*questions?|type\s+(?:the\s+)?answers?|free(?:\s|-)?text|short(?:\s|-)?answer)\b|שאלות?\s+פתוחות?|שאלה\s+פתוחה|לכתוב\s+(?:את\s+)?התשובה|להקליד\s+(?:את\s+)?התשובה|פתוחות|أسئلة\s+مفتوحة/i.test(text);
+  const wantsMc = /\b(multiple(?:\s|-)?choice|options?\s*questions?|mc\s*questions?|choice\s*questions?)\b|שאלות?\s+אמריקאיות?|אמריקאיות|רב(?:\s|-)?ברירה|בחירה|אפשרויות|اختيار\s+من\s+متعدد/i.test(text);
+  const onlyOpen = /\b(only\s+open|all\s+open|just\s+open)\b|רק\s+(?:שאלות\s+)?פתוחות/i.test(text);
+  const onlyMc = /\b(only\s+(?:multiple\s*choice|options?|mc)|all\s+multiple\s*choice)\b|רק\s+(?:שאלות\s+)?(?:אמריקאיות|רב(?:\s|-)?ברירה)/i.test(text);
+  const onlyTf = /\b(only\s+true\s*(?:\/|or)\s*false|all\s+true\s*(?:\/|or)\s*false)\b|רק\s+(?:שאלות\s+)?נכון\s*(?:או\s*|\/)?לא\s*נכון/i.test(text);
+  const onlyFill = /\b(only\s+fill(?:\s|-)*in(?:\s|-)*(?:the(?:\s|-)*blanks?)?)\b|רק\s+(?:שאלות\s+)?(?:השלמת\s*משפט(?:ים)?|השלם\s*את\s*החסר)/i.test(text);
+
+  const explicitMcMatch = text.match(/(\d{1,2})\s*(?:option(?:s)?|multiple(?:\s|-)?choice|mc|אמריקאיות|רב(?:\s|-)?ברירה|בחירה)(?:\s+questions?|\s+שאלות)?/i);
+  const explicitOpenMatch = text.match(/(\d{1,2})\s*(?:open(?:\s|-)?(?:ended)?|written|פתוחות)(?:\s+questions?|\s+שאלות)?/i);
+
+  let mcCount = 0, tfCount = 0, fillCount = 0, openCount = 0;
+  if (explicitMcMatch && explicitOpenMatch){
+    const rawMc = Math.max(1, parseInt(explicitMcMatch[1], 10));
+    const rawOpen = Math.max(1, parseInt(explicitOpenMatch[1], 10));
+    const total = Math.max(5, Math.min(20, rawMc + rawOpen));
+    mcCount = Math.min(total - 1, rawMc);
+    openCount = total - mcCount;
+    return { n: total, mcCount, tfCount: 0, fillCount: 0, openCount, lg };
+  } else if (onlyOpen || (wantsOpen && !wantsMc && /\bonly\b|רק/i.test(text))){
+    openCount = n;
+  } else if (onlyMc){
+    mcCount = n;
+  } else if (onlyTf){
+    tfCount = n;
+  } else if (onlyFill){
+    fillCount = n;
+  } else {
+    // 4-type balanced distribution: mc + tf + fill + open
+    tfCount = Math.max(1, Math.round(n * 0.2));
+    fillCount = Math.max(1, Math.round(n * 0.2));
+    openCount = Math.max(1, Math.round(n * 0.25));
+    mcCount = Math.max(1, n - tfCount - fillCount - openCount);
+  }
+  return { n, mcCount, tfCount, fillCount, openCount, lg };
+}
+function extractQuizTopicClient(text){
+  let topic = String(text || '')
+    .replace(/^\s*\/(test|quiz|exam)\s*/i, '')
+    .replace(/^(please\s+)?(can\s+you\s+|could\s+you\s+)?(create|make|give\s+me|build|generate|write|prepare)?\s*(me\s+)?(a|an)?\s*(short|quick|hard|easy|medium|full|complete|new|interactive)?\s*(quiz|test|exam|trivia)\s*(me\s+)?(about|on|for|in|regarding)?\s*/i, '')
+    .replace(/^(בבקשה\s+)?(תכין|צור|תיצור|תעשה|תן|כתוב|תכתוב|תבנה)?\s*(לי)?\s*(בוחן|מבחן|חידון|מבדק|שאלון)\s*(חדש\s+|קצר\s+|מלא\s+)?(על|בנושא|ב-?|לגבי)?\s*/i, '')
+    .replace(/^(תבחן|בחן)\s+אותי\s*(על|בנושא|ב-?)?\s*/i, '')
+    .replace(/[,(]?\s*(with|in|of|containing|having|between|עם|ב|של|בן|בת|-)?\s*(?:\d{1,2}\s*(?:and|-|to|עד)\s*)?\d{1,2}\s*(questions?|qs?\b|שאלות|שאלה|أسئلة|سؤال)\)?/ig, '')
+    .replace(/[,(]?\s*(?:including|with|both|and|or|only|כולל|עם|וגם|שילוב\s+של|רק)?\s*(?:option(?:s)?\s*questions?|multiple(?:\s|-)?choice(?:\s*questions?)?|open(?:\s|-)?(?:ended)?\s*questions?|written\s*questions?|true\s*(?:\/|or)\s*false(?:\s*questions?)?|fill(?:\s|-)*in(?:\s|-)*the(?:\s|-)*blanks?|שאלות?\s+אמריקאיות?|שאלות?\s+פתוחות?|נכון\s*או\s*לא\s*נכון|השלמת\s*משפט(?:ים)?|אמריקאיות|פתוחות|רב(?:\s|-)?ברירה)/ig, '')
+    .replace(/[,(]?\s*(?:and\s+)?(?:at\s+the\s+end\s+)?(?:check\s+my\s+answers?|give\s+me\s+(?:a\s+)?score|grade\s+me|ותבדוק\s+אותי|ותן\s+לי\s+ציון).*$/i, '')
+    .replace(/[,]?\s*\b(easy|medium|hard|difficult|simple)\b(\s*(level|difficulty))?/ig, '')
+    .replace(/\s+(קשה|קל|בינוני|ברמה\s+קשה|ברמה\s+קלה|ברמה\s+בינונית)\b/g, '')
+    .replace(/^[\s,.:;\-–—]+|[\s?.!,:;\-–—]+$/g, '')
+    .trim();
+  if (!topic || topic.length < 2){
+    const aboutMatch = String(text || '').match(/(?:about|on|for|על|בנושא)\s+([^,.?!]+?)(?:\s+(?:with|עם|בן|של)\s+\d+|\s*$)/i);
+    if (aboutMatch && aboutMatch[1]) topic = aboutMatch[1].trim();
+  }
+  return topic || String(text || '').replace(/^\s*\/(test|quiz|exam)\s*/i, '').trim() || 'General Knowledge';
+}
+const REFERENTIAL_QUIZ_TOPIC_RX = /^(?:זה|הזה|זאת|הזאת|הם|הן|אלו|אלה|החומר(?:\s+הזה)?|הנושא(?:\s+הזה)?|מה\s+ש(?:דיברנו|למדנו|אמרת|הסברת|כתבת|ביקשתי|שלחתי)(?:\s+עליו|\s+עכשיו)?|עליו|עליה|עליהם|אותו\s+דבר|אותו\s+נושא|הפרק(?:\s+הזה)?|הסיפור(?:\s+הזה)?|המאמר(?:\s+הזה)?|this|that|it|these|those|this\s+topic|that\s+topic|this\s+subject|this\s+material|the\s+material|what\s+we\s+(?:just\s+)?(?:talked|learned|studied|discussed)(?:\s+about)?|what\s+you\s+(?:just\s+)?(?:taught|explained|said)|the\s+above|same\s+topic|General\s+Knowledge|ידע\s+כללי|معلومات\s+عامة)$/i;
+
+function isReferentialOrEmptyQuizTopicClient(topic, rawRequest){
+  const clean = String(topic || '').replace(/^(?:על|בנושא|לגבי|ב-?|about|on|for|of|in)\s+/i, '').replace(/[?.!،,\s]+$/g, '').trim();
+  if (!clean || clean.length < 2) return true;
+  if (REFERENTIAL_QUIZ_TOPIC_RX.test(clean)) return true;
+  if (/^(?:על\s+זה|בנושא\s+הזה|על\s+החומר\s+הזה|על\s+הנושא\s+הזה|על\s+מה\s+שלמדנו|על\s+מה\s+שדיברנו|על\s+מה\s+שהסברת|about\s+this|on\s+this|about\s+that|on\s+that|about\s+it|on\s+it|on\s+what\s+we\s+learned|about\s+what\s+you\s+taught)$/i.test(String(topic || '').trim())) return true;
+  if (rawRequest && /(?:מבחן|בוחן|חידון|תבחן\s+אותי|בחן\s+אותי|test|quiz|exam)\s+(?:אותי\s+)?(?:על\s+זה|על\s+הנושא\s+הזה|על\s+החומר\s+הזה|על\s+מה\s+שלמדנו|על\s+מה\s+שדיברנו|על\s+מה\s+שהסברת|עליו|עליה|on\s+this|about\s+this|on\s+that|about\s+that|on\s+it|about\s+it|on\s+what\s+we\s+learned)\b/i.test(rawRequest) && clean.split(/\s+/).length <= 3) return true;
+  return false;
+}
+
+const SUBJECT_CURRICULUM_PROFILES = [
+  { rx: /תנ"?ך|תורה|נביאים|כתובים|בראשית|שמות|ויקרא|במדבר|דברים|יהושע|שופטים|שמואל|מלכים|ישעיהו|ירמיהו|יחזקאל|תהילים|משלי|איוב|מגילת|קהלת|אסתר|רות|עזרא|נחמיה|דברי\s+הימים|bible|tanakh|torah|genesis|exodus|kings|samuel|isaiah|jeremiah/i,
+    prompt: 'Subject: Tanakh (Hebrew Bible / תנ״ך). Focus on chapters & verses (פרקים ופסוקים), biblical characters & their motives, keywords/leitwort (מילים מנחות ושורש מנחה), literary devices (תקבולת, אירוניה, אנלוגיה, קושי ופתרונו), historical/moral messages, and comparisons between biblical passages.' },
+  { rx: /היסטוריה|מלחמת\s+העולם|המהפכה|ציונות|השואה|לאומיות|בית\s+שני|יוון|רומא|ימי\s+הביניים|history|world\s+war|revolution|holocaust|zionism/i,
+    prompt: 'Subject: History (היסטוריה). Focus on causes and consequences (גורמים ותוצאות), historical timeline & turning points, primary source analysis, key figures, ideological movements, and historical significance.' },
+  { rx: /מתמטיקה|אלגברה|גיאומטריה|טריגונומטריה|חדו"?א|נגזרת|אינטגרל|משוואה|משוואות|פונקציה|פונקציות|הסתברות|וקטורים|math|algebra|geometry|calculus|derivative|integral|equation|probability/i,
+    prompt: 'Subject: Mathematics (מתמטיקה). Focus on step-by-step problem solving, formulas, geometric/algebraic reasoning, numerical calculation questions, and conceptual understanding of theorems.' },
+  { rx: /פיזיקה|מכניקה|חשמל|מגנטיות|אופטיקה|קרינה|חוקי\s+ניוטון|אנרגיה|תנע|כוח|תאוצה|מהירות|physics|mechanics|electromagnetism|optics|newton|kinematics/i,
+    prompt: 'Subject: Physics (פיזיקה). Focus on physical laws, formulas & units, real-world physical phenomena, force/energy analysis, and quantitative/conceptual problem solving.' },
+  { rx: /ביולוגיה|תא|גנטיקה|דנ"?א|אבולוציה|אקולוגיה|מערכת\s+הדם|מערכת\s+העצבים|פוטוסינתזה|נשימה\s+תאית|אנזימים|biology|genetics|dna|cell|ecology|photosynthesis|evolution/i,
+    prompt: 'Subject: Biology & Life Sciences (ביולוגיה ומדעים). Focus on biological mechanisms, structure-to-function relationships (התאמה בין מבנה לתפקוד), processes, experiments/control groups, and physiological systems.' },
+  { rx: /כימיה|אטום|מולקולה|טבלה\s+מחזורית|קשר\s+כימי|חומצה|בסיס|חמצון|חיזור|מולים|chemistry|periodic\s+table|molecule|acid|base|redox/i,
+    prompt: 'Subject: Chemistry (כימיה). Focus on atomic structure, chemical bonding, reactions, stoichiometry, states of matter, and molecular properties.' },
+  { rx: /ספרות|שירה|סיפור\s+קצר|רומן|דרמה|מטאפורה|דימוי|מוטיב|דובר|נמען|אירוניה|literature|poetry|literary|metaphor|protagonist/i,
+    prompt: 'Subject: Literature (ספרות). Focus on literary devices (אמצעים אמנותיים), character development, narrator/point of view, central themes, conflict, and textual evidence.' },
+  { rx: /אזרחות|דמוקרטיה|זכויות\s+אדם|הפרדת\s+רשויות|שלטון\s+החוק|בג"?ץ|כנסת|מגילת\s+העצמאות|civics|democracy|human\s+rights|constitution/i,
+    prompt: 'Subject: Civics (אזרחות). Focus on democratic principles, human & civil rights, separation of powers, rule of law, and applying civic concepts to real case studies.' },
+  { rx: /לשון|דקדוק|תחביר|מערכת\s+הצורות|בניינים|גזרות|שורש|משקל|הבעה|שחבור|grammar|syntax|morphology|hebrew\s+language/i,
+    prompt: 'Subject: Language & Grammar (לשון והבעה). Focus on syntax (תחביר), morphology (בניינים, שורשים, משקלים), parts of speech, semantics, and accurate linguistic analysis.' },
+  { rx: /מדעי\s+המחשב|תכנות|אלגוריתמים|מבני\s+נתונים|פייתון|ג׳אווה|סיבוכיות|רקורסיה|עצים|מחסנית|תור|computer\s+science|algorithms|data\s+structures|recursion|complexity/i,
+    prompt: 'Subject: Computer Science (מדעי המחשב). Focus on algorithmic thinking, data structures, time/space complexity, tracing code outputs, and edge cases.' }
+];
+
+function cleanLearnedTopicPromptClient(userMsg){
+  return String(userMsg || '')
+    .replace(/^(?:בבקשה\s+)?(?:אפשר\s+)?(?:תלמד|למד|תסביר|הסבר|סכם|תסכם|ספר|תספר|תעזור\s+לי\s+ללמוד|עזור\s+לי\s+ללמוד|תן\s+לי\s+סיכום|הכן\s+לי\s+סיכום|אני\s+רוצה\s+ללמוד|אני\s+לומד|אני\s+צריך\s+ללמוד)\s*(?:אותי\s+|לי\s+)?(?:על\s+|את\s+|בנושא\s+|לגבי\s+|ב-?)?/i, '')
+    .replace(/^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?(?:teach\s+me|explain(?:\s+to\s+me)?|summarize|help\s+me\s+(?:learn|study)|i\s+want\s+to\s+(?:learn|study)|tell\s+me)\s*(?:about\s+|on\s+|the\s+topic\s+of\s+)?/i, '')
+    .replace(/[?.!،,\s]+$/g, '')
+    .trim();
+}
+
+function resolveQuizContextClient(rawText, extractedTopic, ctx){
+  const convMsgs = (ctx && ctx.conv && Array.isArray(ctx.conv.messages)) ? ctx.conv.messages : [];
+  const curId = ctx && ctx.um && ctx.um.id;
+  const prior = convMsgs.filter(m => m && !m.pending && m.id !== curId && m.content && String(m.content).trim());
+  const history = (prior.length && prior[prior.length - 1].role === 'user' && String(prior[prior.length - 1].content || '').trim() === String(rawText || '').trim())
+    ? prior.slice(0, -1)
+    : prior;
+
+  const isRef = isReferentialOrEmptyQuizTopicClient(extractedTopic, rawText);
+  const recentAssistant = [...history].reverse().filter(m => m.role === 'assistant' && String(m.content || '').trim().length > 40).slice(0, 3);
+  const recentUserTopics = [...history].reverse().filter(m => m.role === 'user' && !quizTest(String(m.content || ''))).slice(0, 4);
+
+  let resolvedTopic = extractedTopic;
+  let usedConv = false;
+
+  if (isRef){
+    for (const um of recentUserTopics){
+      const cleaned = cleanLearnedTopicPromptClient(um.content || '');
+      if (cleaned && cleaned.length >= 3 && !isReferentialOrEmptyQuizTopicClient(cleaned)){
+        resolvedTopic = cleaned.slice(0, 120);
+        usedConv = true;
+        break;
+      }
+    }
+    if (!usedConv && recentAssistant.length > 0){
+      const lastBot = String(recentAssistant[0].content || '');
+      const hm = lastBot.match(/^#{1,3}\s+([^\n#*]{3,90})/m) || lastBot.match(/\*\*([^*]{3,80})\*\*/);
+      if (hm && hm[1]){
+        resolvedTopic = hm[1].replace(/[#*`]/g, '').trim();
+        usedConv = true;
+      } else {
+        resolvedTopic = lastBot.replace(/\s+/g, ' ').trim().slice(0, 80);
+        usedConv = true;
+      }
+    }
+  } else if (recentAssistant.length > 0){
+    const topicWords = resolvedTopic.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(w => w.length >= 2);
+    const recentCombined = [...recentUserTopics.map(m => m.content || ''), ...recentAssistant.map(m => m.content || '')].join('\n').toLowerCase();
+    if (topicWords.some(w => recentCombined.includes(w))){
+      usedConv = true;
+      if (topicWords.length <= 2 && recentUserTopics.length > 0){
+        const detailedPrev = cleanLearnedTopicPromptClient(recentUserTopics[0].content || '');
+        if (detailedPrev && detailedPrev.length > resolvedTopic.length && detailedPrev.length <= 120){
+          resolvedTopic = detailedPrev;
+        }
+      }
+    }
+  }
+
+  let studyContext = '';
+  if ((isRef || usedConv) && (recentAssistant.length > 0 || recentUserTopics.length > 0)){
+    const parts = [];
+    if (recentUserTopics.length > 0){
+      parts.push('Student study request in this chat: ' + recentUserTopics.slice(0, 2).reverse().map(m => String(m.content || '').trim()).join(' | '));
+    }
+    if (recentAssistant.length > 0){
+      parts.push('Material taught in this conversation:\n' + recentAssistant.slice(0, 2).reverse().map(m => String(m.content || '').trim().slice(0, 2600)).join('\n---\n'));
+    }
+    studyContext = parts.join('\n\n').slice(0, 4800);
+  }
+
+  const combinedSample = `${rawText}\n${resolvedTopic}\n${studyContext}`;
+  let subjectPrompt = '';
+  for (const sp of SUBJECT_CURRICULUM_PROFILES){
+    if (sp.rx.test(combinedSample)){ subjectPrompt = sp.prompt; break; }
+  }
+
+  return { topic: resolvedTopic, studyContext, subjectPrompt, usedConv };
+}
+
 async function quizRun(text, ctx){
-  const lg = langOf(text), topic = text.replace(/^(please\s+)?(can you\s+)?(create|make|give me|build|generate)?\s*(me\s+)?(a|an)?\s*(short|quick|hard|easy)?\s*(quiz|test|trivia)\s*(me\s+)?(about|on|for)?\s*/i, '').replace(/^(תכין|צור|תיצור|תעשה|תן)?\s*(לי)?\s*(בוחן|חידון)\s*(על|בנושא|ב)?\s*/, '').replace(/[,(]?\s*(with|in|of|עם|ב|-)?\s*\d{1,2}\s*(questions|qs|שאלות|أسئلة)\)?/ig, '').replace(/[,]?\s*\b(easy|medium|hard|difficult|simple)\b(\s*(level|difficulty))?/ig, '').replace(/\s+(קשה|קל|בינוני)$/, '').replace(/[?.!\s]+$/, '').trim() || text;
-  const n = /\b(\d{1,2})\s*(questions|שאלות|أسئلة)/i.test(text) ? Math.max(3, Math.min(+text.match(/(\d{1,2})\s*(questions|שאלות|أسئلة)/i)[1], 15)) : 8;
+  const defLen = Math.max(5, Math.min(20, +(A.settings && A.settings().quizLength) || 8));
+  const spec = parseQuizRequestSpecClient(text, defLen);
+  const rawExtractedTopic = extractQuizTopicClient(text);
+  const resolved = resolveQuizContextClient(text, rawExtractedTopic, ctx);
+  const topic = resolved.topic;
+  const lg = /[\u0590-\u05FF]/.test(topic) ? 'he' : /[\u0600-\u06FF]/.test(topic) ? 'ar' : spec.lg;
+  const n = spec.n;
   const diff = /hard|difficult|קשה|صعب/i.test(text) ? 'hard' : /easy|simple|קל|سهل/i.test(text) ? 'easy' : 'medium';
-  ctx.work.log('Writing quiz questions');
-  const q = await Lessons.genQuiz({topic, n, diff, lang: lg, tier: ctx.tier, signal: ctx.signal, log: x => ctx.work.log(x)});
-  if (q && q.questions && q.questions.length < n && q.questions.length >= 1){ try { const more = await Lessons.genQuiz({topic, n: n - q.questions.length + 1, diff, lang: lg, tier: ctx.tier, signal: ctx.signal, log: x => ctx.work.log(x)}); const seen = new Set(q.questions.map(x => String(x.q || x.question || '').toLowerCase().slice(0, 60))); for (const x of (more && more.questions) || []){ const k = String(x.q || x.question || '').toLowerCase().slice(0, 60); if (q.questions.length >= n) break; if (!seen.has(k)){ seen.add(k); q.questions.push(x); } } } catch (e){ if (ctx.signal && ctx.signal.aborted) throw e; } }
-  if (q.questions.length < 3) throw Object.assign(new Error(pick(lg, {en:'Could not build enough questions — try again', he:'לא הצלחתי לבנות מספיק שאלות — נסו שוב'})), {userFacing: true});
-  return {content: pick(lg, {en:`Here's your quiz on **${topic}** — ${q.questions.length} questions. Good luck! 🍀`, he:`הנה הבוחן שלך על **${topic}** — ${q.questions.length} שאלות. בהצלחה! 🍀`, ar:`إليك اختبارك حول **${topic}** — ${q.questions.length} أسئلة. بالتوفيق! 🍀`}),
-    cards: [{type:'quiz', data: Object.assign(q, {lang: lg, state:{i:0, answers:[]}}), summary: `You gave an interactive quiz "${q.title}" with ${q.questions.length} questions`}]};
+  ctx.work.log(pick(lg, {
+    en: `Building ${n}-question test on "${topic}" (${spec.mcCount} MC · ${spec.tfCount} True/False · ${spec.fillCount} Fill-Blank · ${spec.openCount} Open)…`,
+    he: `בונה מבחן בן ${n} שאלות על "${topic}" (${spec.mcCount} אמריקאיות · ${spec.tfCount} נכון/לא נכון · ${spec.fillCount} השלמת משפט · ${spec.openCount} פתוחות)…`,
+    ar: `جارٍ إعداد اختبار من ${n} أسئلة حول "${topic}"…`
+  }));
+  const q = await Lessons.genQuiz({
+    topic,
+    n,
+    diff,
+    lang: lg,
+    mcCount: spec.mcCount,
+    tfCount: spec.tfCount,
+    fillCount: spec.fillCount,
+    openCount: spec.openCount,
+    subjectPrompt: resolved.subjectPrompt,
+    studyContext: resolved.studyContext,
+    tier: ctx.tier,
+    signal: ctx.signal,
+    log: x => ctx.work.log(x)
+  });
+  if (!q || !q.questions || q.questions.length < 3) {
+    throw Object.assign(new Error(pick(lg, {en:'Could not build enough questions — try again', he:'לא הצלחתי לבנות מספיק שאלות — נסו שוב'})), {userFacing: true});
+  }
+  const actualMc = q.questions.filter(x => x.type === 'mc').length;
+  const actualTf = q.questions.filter(x => x.type === 'tf').length;
+  const actualFill = q.questions.filter(x => x.type === 'fill').length;
+  const actualOpen = q.questions.filter(x => x.type === 'open').length;
+  const breakdownHe = [
+    actualMc ? `${actualMc} אמריקאיות` : '',
+    actualTf ? `${actualTf} נכון/לא נכון` : '',
+    actualFill ? `${actualFill} השלמת משפט` : '',
+    actualOpen ? `${actualOpen} שאלות פתוחות` : ''
+  ].filter(Boolean).join(' + ');
+  const breakdownEn = [
+    actualMc ? `${actualMc} multiple-choice` : '',
+    actualTf ? `${actualTf} true/false` : '',
+    actualFill ? `${actualFill} fill-in-the-blank` : '',
+    actualOpen ? `${actualOpen} open written` : ''
+  ].filter(Boolean).join(' + ');
+  return {
+    content: pick(lg, {
+      en: `Here is your interactive test on **${topic}** — **${q.questions.length} questions** (${breakdownEn}). Answer all questions and click **✓ Finish & Check Answers** at the end to get your full score and AI feedback! 📝`,
+      he: `הנה המבחן האינטראקטיבי שלך על **${topic}** — **${q.questions.length} שאלות** (${breakdownHe}). ענו על כל השאלות ולחצו על **✓ סיום ובדיקת המבחן** בסוף כדי לקבל בדיקה מלאה וציון! 📝`,
+      ar: `إليك اختبارك التفاعلي حول **${topic}** — **${q.questions.length} أسئلة**. أجب عن جميع الأسئلة واضغط على إنهاء وفحص الإجابات للحصول على نتيجتك! 📝`
+    }),
+    cards: [{type:'quiz', data: Object.assign(q, {lang: lg, state:{i:0, answers:[], drafts:[]}}), summary: `You gave an interactive test "${q.title}" with ${q.questions.length} questions (${breakdownEn})`}]
+  };
 }
 A.registerCard('quiz', (d, m, c) => {
   const env = {lang: d.lang || 'en', save: () => m && A.persistMsg(m), scroll: () => {}, tier: () => A.state.model,
-    finish(st){ if (c){ c.summary = `Quiz "${d.title}" — user scored ${st.score}/${d.questions.length}`; } if (m) A.persistMsg(m); if (st.score / d.questions.length >= .8 && window.Mascot) Mascot.set('happy'); },
-    retry(qs){ A.sendText(pick(env.lang, {en:'Quiz me again on the questions I got wrong', he:'תבחן אותי שוב על השאלות שטעיתי בהן', ar:'اختبرني مجددًا في الأسئلة التي أخطأت فيها'}), {quizRetry: qs, title: d.title}, 'quiz'); },
-    newQuiz(topic){ A.sendText(pick(env.lang, {en:'Create a new quiz about ', he:'צור בוחן חדש על ', ar:'أنشئ اختبارًا جديدًا عن '}) + topic, null, 'quiz'); }};
+    finish(st){ if (c){ c.summary = `Test "${d.title}" — user scored ${st.score}/${d.questions.length}`; } if (m) A.persistMsg(m); if (st.score / d.questions.length >= .8 && window.Mascot) Mascot.set('happy'); },
+    retry(qs){ A.sendText(pick(env.lang, {en:'Test me again on the questions I got wrong', he:'תבחן אותי שוב על השאלות שטעיתי בהן', ar:'اختبرني مجددًا في الأسئلة التي أخطأت فيها'}), {quizRetry: qs, title: d.title}, 'quiz'); },
+    newQuiz(topic){ A.sendText(pick(env.lang, {en:'Create a new test about ', he:'צור מבחן חדש על ', ar:'أنشئ اختبارًا جديدًا عن '}) + topic, null, 'quiz'); }};
   const box = Lessons.Quiz({data: d}, env); box.classList.add('chat-quiz'); return box;
 });
-A.registerTool({id:'quiz', icon:'📝', label:'Quiz', test: quizTest, run: async (text, ctx) => {
+A.registerTool({id:'quiz', icon:'📝', label:'Test / Quiz', test: quizTest, run: async (text, ctx) => {
   const meta = ctx.um && ctx.um.meta;
-  if (meta && meta.quizRetry){ const lg = langOf(text); return {content: pick(lg, {en:'Let’s fix those — same questions, fresh try 💪', he:'בואו נתקן — אותן שאלות, ניסיון חדש 💪', ar:'لنصحح ذلك — نفس الأسئلة، محاولة جديدة 💪'}), cards:[{type:'quiz', data:{title: meta.title, lang: lg, questions: meta.quizRetry, state:{i:0, answers:[]}}, summary:'You gave a retry quiz'}]}; }
+  if (meta && meta.quizRetry){ const lg = langOf(text); return {content: pick(lg, {en:'Let’s fix those — same questions, fresh try 💪', he:'בואו נתקן — אותן שאלות, ניסיון חדש 💪', ar:'لنصحح ذلك — نفس الأسئلة، محاولة جديدة 💪'}), cards:[{type:'quiz', data:{title: meta.title, lang: lg, questions: meta.quizRetry, state:{i:0, answers:[], drafts:[]}}, summary:'You gave a retry test'}]}; }
   return quizRun(text, ctx);
 }});
 

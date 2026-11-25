@@ -1,0 +1,18 @@
+# Ignore large local, generated, and test artifacts during Cloud Build / Cloud Run deployment
+.git
+.gitignore
+.aistudio/
+.lz-data/
+.playwright-cli/
+.lokizen-api-keys.json
+node_modules/
+dist/
+build/
+coverage/
+android/
+bun.lock
+*.log
+store-export.json
+src/**/*.test.ts
+src/**/*.test.tsx
+

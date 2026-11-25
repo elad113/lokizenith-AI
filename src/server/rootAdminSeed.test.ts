@@ -4,14 +4,15 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyPassword } from '../utils/authQuota.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const storeModuleUrl = pathToFileURL(path.join(repoRoot, 'src/server/store.ts')).href;
 
 function inspectSeed(dataDir: string, extraEnv: Record<string, string>) {
   const script = `
-    import { store } from '../src/server/store.ts';
+    import { store } from ${JSON.stringify(storeModuleUrl)};
     const users = Object.values(store.users).map((user) => ({
       username: user.username,
       authProvider: user.authProvider || '',
@@ -21,9 +22,7 @@ function inspectSeed(dataDir: string, extraEnv: Record<string, string>) {
     }));
     console.log('SEED_JSON ' + JSON.stringify(users));
   `;
-  const scratch = path.join(repoRoot, '.lz-data');
-  fs.mkdirSync(scratch, { recursive: true });
-  const file = path.join(scratch, `inspect-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.ts`);
+  const file = path.join(dataDir, `inspect-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.ts`);
   fs.writeFileSync(file, script);
   const result = spawnSync(process.execPath, ['--import', 'tsx', file], {
     cwd: repoRoot,

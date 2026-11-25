@@ -58,13 +58,14 @@ export function buildGroqCompletionBody(args: {
   messages: ChatMessage[];
   maxTokens?: number;
   stream?: boolean;
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }) {
   return {
     model: args.model,
     messages: args.messages,
     max_tokens: args.maxTokens ?? 8000,
     temperature: 0.2,
-    reasoning_effort: 'low' as const,
+    reasoning_effort: args.reasoningEffort ?? ('low' as const),
     stream: args.stream !== false,
   };
 }
@@ -337,10 +338,32 @@ export class GroqRequestQueue {
 
 export const groqQueue = new GroqRequestQueue();
 export const groqLimiter = new GroqRateLimiter();
+const groqLimitersByKey = new Map<string, GroqRateLimiter>();
+const groqQueuesByKey = new Map<string, GroqRequestQueue>();
 
-export function estimateGroqTokens(messages: ChatMessage[], maxTokens = 1500): number {
+function getLimiterForKey(apiKey: string): GroqRateLimiter {
+  const k = String(apiKey || 'default');
+  let lim = groqLimitersByKey.get(k);
+  if (!lim) {
+    lim = new GroqRateLimiter();
+    groqLimitersByKey.set(k, lim);
+  }
+  return lim;
+}
+
+function getQueueForKey(apiKey: string): GroqRequestQueue {
+  const k = String(apiKey || 'default');
+  let q = groqQueuesByKey.get(k);
+  if (!q) {
+    q = new GroqRequestQueue();
+    groqQueuesByKey.set(k, q);
+  }
+  return q;
+}
+
+export function estimateGroqTokens(messages: ChatMessage[], maxTokens = 900): number {
   const prompt = messages.reduce((sum, msg) => sum + Math.ceil(String(msg.content || '').length / 4), 0);
-  return prompt + Math.min(Math.max(1, maxTokens), 1500);
+  return Math.min(2200, prompt + Math.min(Math.max(1, maxTokens), 900));
 }
 
 export interface GroqStreamResult {
@@ -357,6 +380,7 @@ export async function streamGroqCompletion(opts: {
   messages: ChatMessage[];
   model?: string;
   maxTokens?: number;
+  reasoningEffort?: 'low' | 'medium' | 'high';
   onDelta: (text: string) => void;
   signal?: AbortSignal;
 }): Promise<GroqStreamResult> {
@@ -365,6 +389,7 @@ export async function streamGroqCompletion(opts: {
     model,
     messages: opts.messages,
     maxTokens: opts.maxTokens,
+    reasoningEffort: opts.reasoningEffort,
     stream: true,
   });
   let res: Response;
@@ -374,6 +399,7 @@ export async function streamGroqCompletion(opts: {
       headers: {
         Authorization: `Bearer ${opts.apiKey}`,
         'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; LokizenithAI/1.0; +https://lokizenith.com)',
       },
       body: JSON.stringify(body),
       signal: opts.signal,
@@ -424,6 +450,7 @@ export async function streamGroqGuarded(
     model?: string;
     fallbackModel?: string;
     maxTokens?: number;
+    reasoningEffort?: 'low' | 'medium' | 'high';
     onDelta: (text: string) => void;
     onModel?: (model: string, notice?: string) => void;
     signal?: AbortSignal;
@@ -435,11 +462,11 @@ export async function streamGroqGuarded(
   } = {}
 ): Promise<GuardedGroqResult> {
   const send = deps.send || streamGroqCompletion;
-  const limiter = deps.limiter || groqLimiter;
-  const queue = deps.queue || groqQueue;
+  const limiter = deps.limiter || getLimiterForKey(opts.apiKey);
+  const queue = deps.queue || getQueueForKey(opts.apiKey);
   const primary = opts.model || resolveLokiCodeModel();
   const fallback = opts.fallbackModel || resolveFallbackModel();
-  const estimate = estimateGroqTokens(opts.messages, Math.min(opts.maxTokens ?? 1500, 1500));
+  const estimate = estimateGroqTokens(opts.messages, Math.min(opts.maxTokens ?? 900, 900));
 
   return queue.enqueue(async () => {
     const first = limiter.decide(primary, fallback, estimate);
@@ -453,6 +480,7 @@ export async function streamGroqGuarded(
         messages: opts.messages,
         model,
         maxTokens: opts.maxTokens,
+        reasoningEffort: opts.reasoningEffort,
         onDelta: opts.onDelta,
         signal: opts.signal,
       });

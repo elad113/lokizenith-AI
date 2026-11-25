@@ -326,25 +326,26 @@ function setCallPhase(phase){
 }
 
 setInterval(() => {
-  if (document.hidden) return;
+  if (document.hidden || !cfg().on) return;
   const now = Date.now();
   const callOv = $('#callOverlay');
   const inVoiceCall = !!(callOv && !callOv.hidden);
   const callPhase = inVoiceCall ? (callOv.dataset.phase || currentCallPhase || 'listening') : 'idle';
   const lcWork = $('#lcWorking');
   const isCodingNow = !!(lcWork && !lcWork.hidden && $('#codeView.active'));
-  const busy = document.querySelector('.msg.bot.busy');
+  const busy = document.querySelector('.msg.bot.busy, #lessonsView .ls-working');
   const browserSpeaking = !!(window.speechSynthesis && speechSynthesis.speaking);
   const isSpeakingNow = externalSpeaking || browserSpeaking || (inVoiceCall && callPhase === 'speaking');
 
   if (busy){
-    const len = (busy.innerText || '').length;
+    const streamNode = $('.md, .bubble .content, .msg-body', busy);
+    const len = streamNode && streamNode.textContent ? streamNode.textContent.length : 0;
     if (len > lastLen + 2) lastGrow = now;
     lastLen = len;
   } else {
     lastLen = 0;
   }
-  const streaming = busy && (now - lastGrow < 700) && $('.md, .bubble .content, .msg-body', busy);
+  const streaming = !!(busy && (now - lastGrow < 800));
 
   let want = null;
   if (inVoiceCall){
@@ -370,9 +371,9 @@ setInterval(() => {
 
   // Real-time mouth articulation & expressive hand gestures by situation
   ALL.forEach(w => {
+    if (!w.isConnected){ ALL.delete(w); return; }
     const s = w.dataset.s || shown();
     if (s === 'calling' || s === 'talking' || isSpeakingNow){
-      // Multi-harmonic mouth articulation so mouth opens & closes realistically
       const mouthOpen = 0.45 + Math.abs(Math.sin(now / 85)) * 0.75 + Math.abs(Math.cos(now / 53)) * 0.45;
       const armL = Math.sin(now / 190) * 42 + 24;
       const armR = Math.cos(now / 165) * -46 - 24;
@@ -380,7 +381,6 @@ setInterval(() => {
       w.style.setProperty('--arm-l', armL.toFixed(1) + 'deg');
       w.style.setProperty('--arm-r', armR.toFixed(1) + 'deg');
     } else if (s === 'coding'){
-      // High-speed alternating typing hands
       const armL = 32 + Math.sin(now / 45) * 22;
       const armR = -32 + Math.cos(now / 45) * 22;
       w.style.setProperty('--mouth-open', '0.8');
@@ -392,13 +392,18 @@ setInterval(() => {
       w.style.setProperty('--mouth-open', '0.5');
       w.style.setProperty('--arm-l', armL.toFixed(1) + 'deg');
       w.style.setProperty('--arm-r', armR.toFixed(1) + 'deg');
-    } else {
+    } else if (w._hadAnimProps) {
+      w._hadAnimProps = false;
       w.style.removeProperty('--mouth-open');
       w.style.removeProperty('--arm-l');
       w.style.removeProperty('--arm-r');
+      return;
+    } else {
+      return;
     }
+    w._hadAnimProps = true;
   });
-}, 65);
+}, 140);
 
 /* ---- placements ---- */
 let dock = null, dockWrap = null;
@@ -479,7 +484,16 @@ function apply(){
   const on = cfg().on; document.documentElement.classList.toggle('mz-off', !on);
   if (on){ placeDock(); placeHero(); placeCall(); } else if (dockWrap) dockWrap.hidden = true;
 }
-new MutationObserver(() => { placeHero(); placeCall(); if (dockWrap) dockWrap.hidden = !cfg().on; }).observe(document.body, {childList: true, subtree: true});
+let _mzPlaceRaf = 0;
+new MutationObserver(() => {
+  if (_mzPlaceRaf) return;
+  _mzPlaceRaf = requestAnimationFrame(() => {
+    _mzPlaceRaf = 0;
+    placeHero();
+    placeCall();
+    if (dockWrap) dockWrap.hidden = !cfg().on;
+  });
+}).observe(document.body, {childList: true, subtree: true});
 document.addEventListener('input', e => { if (e.target.id === 'prompt' && base === 'idle' && trans !== 'curious' && e.target.value.length % 12 === 1){ trans = null; set('curious'); } }, true);
 document.addEventListener('submit', e => { if (e.target.id === 'composer'){ set('surprised', 600); } }, true);
 
@@ -550,58 +564,27 @@ const SUGGESTIONS = {
 };
 
 let suggestIdx = 0;
-let aiSuggestionQueue = [];
-let fetchingAiLine = false;
-
-async function fetchAiSuggestion(){
-  if (fetchingAiLine || !window.LZ || !window.LZ.chat) return;
-  const authOv = document.getElementById('authOverlay');
-  if (authOv && !authOv.hidden) return;
-  fetchingAiLine = true;
-  try {
-    const l = lang();
-    const prompt = l === 'he'
-      ? 'תן הצעה אחת קצרה ומגניבה לשאלה או משימת קוד שהמשתמש יכול לבקש ממך (למשל סקריפט LSL, גרפיקה, או אלגוריתם). פורמט קצר בלבד: נסה לשאול: "..." או שאל אותי: "..."'
-      : l === 'ar'
-      ? 'أعطِ اقتراحًا واحدًا قصيرًا ومميزًا لمهمة برمجية أو سؤال يمكن للمستخدم طرحه باللغة العربية فقط. بصيغة: جرّب أن تسأل: "..."'
-      : 'Give ONE short, punchy idea for a coding task or question the user can ask in English (e.g. LSL script, 3D graphics, or algorithm). Short format only: Try asking: "..." or Ask me: "..."';
-    const res = await LZ.chat([{role:'system', content: 'You are Loki, a playful AI companion. Output ONLY ONE short suggestion sentence in the requested language.'}, {role:'user', content: prompt}], {maxTokens: 60, level: 0, _noConsume: true});
-    if (res && res.trim() && res.length < 140){
-      aiSuggestionQueue.push(res.trim().replace(/^["']|["']$/g, ''));
-    }
-  } catch(_){}
-  finally { fetchingAiLine = false; }
-}
 
 function tickAutonomousSuggestion(){
   if (document.hidden || !cfg().on) return;
   const authOv = document.getElementById('authOverlay');
   if (authOv && !authOv.hidden) return;
-  const isBusy = !!document.querySelector('.msg.bot.busy');
+  const isBusy = !!document.querySelector('.msg.bot.busy, #lessonsView .ls-working');
   if (isBusy) return;
 
   const target = (dock && dock.isConnected && !dockWrap?.hidden) ? dock : document.querySelector('.mz.hero');
   if (!target || !target.isConnected) return;
 
-  let line = '';
-  if (aiSuggestionQueue.length > 0){
-    line = aiSuggestionQueue.shift();
-  } else {
-    const pool = SUGGESTIONS[lang()] || SUGGESTIONS.en;
-    line = pool[suggestIdx % pool.length];
-    suggestIdx++;
-  }
-
-  if (Math.random() < 0.4 && aiSuggestionQueue.length < 3){
-    fetchAiSuggestion();
-  }
+  const pool = SUGGESTIONS[lang()] || SUGGESTIONS.en;
+  const line = pool[suggestIdx % pool.length];
+  suggestIdx++;
 
   set('talking', 3000);
   bubble(target, line, 6500);
 }
 
-// Loki mascot suggests fresh lines every 8 seconds on his own
-setInterval(tickAutonomousSuggestion, 8000);
+// Loki mascot suggests fresh lines on his own using zero-latency local pool
+setInterval(tickAutonomousSuggestion, 14000);
 
 apply(); blink(); lookAround(); setTimeout(wander, 4000);
 window.Mascot = {

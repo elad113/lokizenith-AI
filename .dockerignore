@@ -2,9 +2,11 @@ node_modules
 dist
 android
 .git
-.env
-.env.*
-!.env.example
 /benches*.png
 .lz-data
 .lokizen-api-keys.json
+.playwright-cli
+.aistudio
+bun.lock
+src/**/*.test.ts
+src/**/*.test.tsx

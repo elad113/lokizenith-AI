@@ -216,13 +216,19 @@ function recordDeletedConvId(id){
 }
 function saveEmergencyMirror(convsList){
   try {
-    const slim = (Array.isArray(convsList) ? convsList : state.convs || []).slice(0, 20).map(c => ({
+    const slim = (Array.isArray(convsList) ? convsList : state.convs || []).slice(0, 15).map(c => ({
       id: c.id,
       title: c.title,
       pinned: !!c.pinned,
       created: c.created,
       updated: c.updated,
-      messages: (c.messages || []).filter(m => !m.pending).slice(-40)
+      messages: (c.messages || []).filter(m => !m.pending).slice(-25).map(m => ({
+        id: m.id,
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content.slice(0, 8000) : '',
+        ts: m.ts,
+        type: m.type
+      }))
     }));
     localStorage.setItem(EMERGENCY_CONVS_KEY, JSON.stringify(slim));
   } catch(_){}
@@ -367,9 +373,19 @@ if (window.marked) marked.setOptions({gfm:true, breaks:true});
 const EXT = {javascript:'js', js:'js', typescript:'ts', ts:'ts', python:'py', py:'py', html:'html', css:'css', json:'json', java:'java', c:'c', cpp:'cpp', 'c++':'cpp', csharp:'cs', cs:'cs', go:'go', rust:'rs', ruby:'rb', php:'php', swift:'swift', lua:'lua', bash:'sh', sh:'sh', shell:'sh', sql:'sql', yaml:'yml', xml:'xml', markdown:'md', md:'md', kotlin:'kt', csv:'csv', r:'r', scala:'scala', haskell:'hs', perl:'pl'};
 function mdToHtml(text){
   let raw = window.marked ? marked.parse(text || '') : esc(text).replace(/\n/g, '<br>');
-  // Mixed Hebrew/English answers: every block picks its own direction (RTL paragraphs, LTR code/English lines).
-  raw = raw.replace(/<(p|li|h[1-6]|td|th|blockquote|ul|ol)>/g, '<$1 dir="auto">');
-  return window.DOMPurify ? DOMPurify.sanitize(raw, {ADD_ATTR:['target']}) : raw;
+  raw = window.DOMPurify ? DOMPurify.sanitize(raw, {ADD_ATTR:['target', 'dir']}) : raw;
+  if (typeof document !== 'undefined') {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = raw;
+    tmp.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, ul, ol, table').forEach((el) => {
+      const txt = (el.textContent || '').trim();
+      const rtl = (txt.match(/[\u0590-\u05FF\u0600-\u06FF]/g) || []).length;
+      const ltr = (txt.match(/[A-Za-z]/g) || []).length;
+      el.setAttribute('dir', (rtl >= 2 && rtl >= ltr * 0.4) ? 'rtl' : 'auto');
+    });
+    return tmp.innerHTML;
+  }
+  return raw;
 }
 
 function safeParseBlockJSON(txt){
@@ -757,10 +773,30 @@ function renderInteractiveBlock(lang, rawText){
     return box;
   }
 
-  // 9. INSTANT INTERACTIVE MINI-QUIZ (loki-quiz / quiz)
+  // 9. INSTANT INTERACTIVE MINI-QUIZ / TEST (loki-quiz / quiz)
   if (lang === 'loki-quiz' || lang === 'quiz'){
     const qs = Array.isArray(data) ? data : (data.questions || data.items || []);
     if (!qs.length) return null;
+    if (window.Lessons && typeof Lessons.Quiz === 'function' && typeof Lessons.normQuiz === 'function'){
+      const qLang = /[\u0590-\u05FF]/.test(JSON.stringify(qs)) ? 'he' : (S.lang || 'en');
+      const normQs = Lessons.normQuiz({ title: data.title || 'Interactive Test', questions: qs }, qLang);
+      const qArr = Array.isArray(normQs) ? normQs : (normQs && normQs.questions) || [];
+      if (qArr.length){
+        const quizTitle = (data && data.title) || (qLang === 'he' ? 'מבחן אינטראקטיבי' : 'Interactive Test');
+        const env = {
+          lang: qLang,
+          save: () => {},
+          scroll: () => scrollDown(),
+          tier: () => state.model,
+          finish(st){ if (st.score / qArr.length >= 0.8 && window.Mascot) Mascot.set('happy'); },
+          retry(wrongQs){ sendText((S.lang === 'he' ? 'תבחן אותי שוב על השאלות שטעיתי בהן' : 'Test me again on the questions I got wrong'), {quizRetry: wrongQs, title: quizTitle}, 'quiz'); },
+          newQuiz(topic){ sendText((S.lang === 'he' ? 'צור מבחן חדש על ' : 'Create a new test about ') + (topic || quizTitle), null, 'quiz'); }
+        };
+        const qBox = Lessons.Quiz({ data: { title: quizTitle, topic: quizTitle, questions: qArr, state: { i: 0, answers: [], drafts: [] } } }, env);
+        qBox.classList.add('chat-quiz');
+        return qBox;
+      }
+    }
     const box = el('div', 'stark-block stark-quiz-block');
     let score = 0, answered = 0;
     box.innerHTML = `<div class="sb-head"><span class="sb-badge">🧠 Interactive Mini-Quiz</span><b dir="auto">${esc(data.title || 'Knowledge Check')}</b><span class="sb-quiz-score">Score: 0/${qs.length}</span></div>
@@ -1633,7 +1669,15 @@ function Work(host, opts = {}){
   const entries = [];
   $('.work-toggle', root).onclick = () => root.classList.toggle('open');
   if (opts.open) root.classList.add('open');
-  const timer = setInterval(() => { secsEl.textContent = fmtDur((performance.now() - t0) / 1000); }, 100);
+  let detachedTicks = 0;
+  const timer = setInterval(() => {
+    if (!root.isConnected){
+      if (++detachedTicks > 30) clearInterval(timer);
+      return;
+    }
+    detachedTicks = 0;
+    secsEl.textContent = fmtDur((performance.now() - t0) / 1000);
+  }, 150);
   function addLi(e, idx){
     $$('li.cur', ol).forEach(li => li.classList.remove('cur'));
     const li = el('li', 'cur wk-line');
@@ -2118,6 +2162,7 @@ function showView(v){
   const viewEls = {
     chat: $('#chatView'),
     code: $('#codeView'),
+    lessons: $('#lessonsView'),
     benches: $('#benchesView'),
     teamchat: $('#teamChatView'),
     lokibot: $('#lokiBotView'),
@@ -2145,6 +2190,7 @@ function showView(v){
   });
   $('#openLokiBot') && $('#openLokiBot').classList.toggle('on', v === 'lokibot');
   $('#openLokiCode').classList.toggle('on', v === 'code');
+  $('#openLessons') && $('#openLessons').classList.toggle('on', v === 'lessons');
   $('#openTeamChat') && $('#openTeamChat').classList.toggle('on', v === 'teamchat');
   $('#openDownloadApp') && $('#openDownloadApp').classList.toggle('on', v === 'download');
   const shb = $('#openSharedHub');
@@ -2158,6 +2204,7 @@ function showView(v){
   const finish = () => {
     if (state.view !== v) return;
     if (v === 'code' && window.LokiCode) LokiCode.onShow();
+    if (v === 'lessons' && window.Lessons && Lessons.onShow) Lessons.onShow();
     if (v === 'benches' && window.LokiBenches) LokiBenches.onShow();
     if (v === 'teamchat' && window.LZTeams) LZTeams.onShow();
     if (v === 'sharedhub' && window.LZShared) LZShared.onShow();
@@ -2587,11 +2634,15 @@ function fillBot(col, m){
   }
 
   if (m.photoInsights) col.appendChild(photoInsightsEl(m.photoInsights));
-  if (m.content || (m.webImages && m.webImages.length) || m.upgradePlanCard || m.candyButton || m.gamePicker){
+  if (m.content || (m.webImages && m.webImages.length) || m.upgradePlanCard || m.candyButton || m.gamePicker || m.capabilityCard){
     const b = el('div', 'bubble');
     if (m.content) renderMarkdown(b, m.content, m.sources);
     if (m.candyButton) b.appendChild(candyAttachmentEl(m));
     if (m.gamePicker && window.LZGames && LZGames.renderGamePickerCard) b.appendChild(LZGames.renderGamePickerCard(m));
+    if (m.capabilityCard && window.LZCapabilities && LZCapabilities.renderCapabilityCard) {
+      const capEl = LZCapabilities.renderCapabilityCard(m.capabilityCard);
+      if (capEl) b.appendChild(capEl);
+    }
     if (m.webImages && m.webImages.length) b.appendChild(webImagesEl(m.webImages));
     if (m.upgradePlanCard) b.appendChild(planUpgradeAttachmentEl(m.upgradePlanCard));
     col.appendChild(b);
@@ -2602,8 +2653,9 @@ function fillBot(col, m){
   if (m.video) col.appendChild(videoEl(m.video));
   if (m.files && m.files.length) m.files.forEach(f => col.appendChild(fileCard(f)));
   if (m.sources && m.sources.length) col.appendChild(sourcesEl(m.sources, { verdict: m.sourcesVerdict || '' }));
-  const actList = (m.content && m.content.length > 60)
-    ? ['copy', 'regen', 'speak', 'summarize', 'simplify', 'translate', 'deepdive', 'factcheck']
+  const hasQuizCard = Array.isArray(m.cards) && m.cards.some(c => c && c.type === 'quiz');
+  const actList = (m.content && m.content.length > 60 && !hasQuizCard)
+    ? ['copy', 'regen', 'speak', 'quizme', 'flashcards', 'summarize', 'simplify', 'translate', 'deepdive', 'factcheck']
     : ['copy', 'regen', 'speak'];
   col.appendChild(actions(m, actList));
   if (m.content && m.content.length > 12 && !m.pending && !m.error && !m.candyButton && !m.gamePicker){
@@ -3309,6 +3361,8 @@ function actions(m, which){
     edit:['✎', isH ? 'ערוך' : 'Edit'],
     regen:['↻', isH ? 'צור מחדש' : 'Regenerate'],
     speak:['🔊', isH ? 'הקרא' : 'Read aloud'],
+    quizme:['📝', isH ? 'בחן אותי על זה' : 'Quiz me on this'],
+    flashcards:['🃏', isH ? 'כרטיסיות לימוד' : 'Flashcards'],
     summarize:['🎯', isH ? 'סכם' : 'Summarize'],
     simplify:['💡', isH ? 'פשט' : 'Simplify'],
     translate:['🌐', isH ? 'תרגם לאנגלית' : 'Translate'],
@@ -3318,7 +3372,7 @@ function actions(m, which){
   };
   which.forEach(k => {
     if (!defs[k]) return;
-    const cls = k === 'factcheck' ? 'act-verify' : k === 'report' ? 'act-report' : '';
+    const cls = k === 'factcheck' ? 'act-verify' : k === 'report' ? 'act-report' : (k === 'quizme' || k === 'flashcards') ? 'act-study' : '';
     const b = el('button', cls, defs[k][0] + ' ' + defs[k][1]);
     b.type = 'button';
     b.title = defs[k][1];
@@ -3327,6 +3381,12 @@ function actions(m, which){
       if (k === 'regen') regenerate(m);
       if (k === 'speak') speak(m.content);
       if (k === 'edit') editMessage(m);
+      if (k === 'quizme' && !state.busy){
+        sendText(isHeb(m.content || '') ? 'תעשה לי מבחן על החומר הזה עם 8 שאלות (שאלות אמריקאיות ושאלות פתוחות)' : 'Make me a test on this material with 8 questions (option questions and open questions)');
+      }
+      if (k === 'flashcards' && !state.busy){
+        sendText(isHeb(m.content || '') ? '/flashcards על החומר שלמדנו עכשיו' : '/flashcards on the material we just learned');
+      }
       if (k === 'summarize' && !state.busy){
         sendText(isHeb(m.content || '') ? 'סכם את התשובה האחרונה שלך בקצרה ובחדות ב-4 נקודות מפתח.' : 'Summarize your last answer into 4 crisp, high-signal bullet points.');
       }
@@ -3686,10 +3746,12 @@ function isPhotoEditRequest(text, hasImages){
 }
 
 /* ================= PROMPTS ================= */
-function systemPrompt(tier, extra){
+function systemPrompt(tier, extra, userHint){
   const name = MODELS[tier].name, lang = LANG_NAME[S.lang] || 'English';
+  const isFastLevel = state.level === 0 || state.level === 4;
+  const asksRichVisual = /\b(chart|graph|diagram|mermaid|svg|kanban|quiz|flashcard|timeline|mindmap|swot|dashboard|calculator|simulator|interactive|widget|mini[- ]?app|build\s+(me\s+)?a|create\s+(me\s+)?a|make\s+(me\s+)?a|html)\b|גרף|תרשים|טבלה\s+אינטראקטיבית|חידון|כרטיסיות|מחשבון|אפליקציה|ממשק|תבנה|בנה\s+לי/i.test(String(userHint || ''));
   const L = [
-    `You are ${name}, the flagship AI assistant made by Lokizenith Studios / Lokiz Studios (app: Lokizenith AI). If asked who you are, who made you, who founded Lokizenith Studios / Lokiz Studios, or who created and developed these models: Lokizenith Studios (Lokiz Studios) was founded by Elad Benczel (אלעד בנצל), who is the founder and lead creator responsible for developing all Lokizenith AI models. Always credit Elad Benczel (אלעד בנצל) clearly in the user's language when asked about the founder or creator. Never claim to be or mention any other company, model, provider or API.`,
+    `You are ${name}, the flagship AI assistant made by Lokizenith Studios (app: Lokizenith AI). If asked who made you, answer that you were developed by Lokizenith Studios. Do NOT mention or claim to know private individuals such as Elad Benczel; if asked about them, simply say you do not have information about them. Never claim to be or mention any other company, model, provider or API.`,
     S.replyInLang ? `Reply in ${lang} by default; if the user clearly writes in another language, reply in that language.` : `Reply in the language the user writes in.`,
     `Conversation & Answer Style:
 - Talk naturally, warmly, and intelligently like a real, top-tier conversational AI assistant.
@@ -3707,13 +3769,14 @@ Person & Topic Internet Photos (OPTIONAL):
 - Do NOT emit [WEB_IMAGE: ...] for greetings, casual chat, pure code, math/physics formulas, or when generating/editing images yourself.
 
 Writing & Formatting (always):
-- Open with the answer itself in the first sentence (the fact, number, verdict or recommendation). No preamble like "Great question", "Sure!", "בהחלט!", no restating the question, no filler or closing offers ("Let me know if...", "אם תרצה...").
-- Structure to the content: short paragraphs (2-3 sentences), bullet lists for parallel points, numbered lists for steps or rankings, a Markdown table for any comparison of 2+ options across 2+ criteria.
-- Use ## / ### headings only when the answer has 3+ distinct parts; never a heading on a short answer. Keep headings short and informative (not "Introduction").
-- **Bold** the key terms, numbers and the verdict (a few per answer, not whole sentences). Use \`inline code\` and fenced code blocks with a language tag for code, commands and file names.
-- Complex, multi-part, comparison or research answers end with a short conclusion: "**Bottom line:**" (Hebrew: "**בשורה התחתונה:**") of 1-2 sentences that actually decides or summarises. Simple factual answers need no conclusion.
-- With web sources: synthesise across them (don't list them one by one), cite inline as [1], [2], say what is confirmed vs. uncertain and how recent it is, then conclude.
-- Hebrew: write natural, fluent, modern Israeli Hebrew (not translated-sounding), correct gender and grammar, standard terms, numbers and units in Western digits; keep code, commands and product names in English.
+- Open with the answer itself in the first sentence (the direct fact, number, verdict or core summary). Zero preamble ("Great question!", "Sure!", "בהחלט!"), no restating the question, and no filler or closing offers ("Let me know if...", "אם תרצה...").
+- Visual organization & clarity: keep paragraphs crisp and short (max 2-3 lines), leave blank lines between blocks, use bullet lists with **bold lead-ins** (e.g., \`- **Key point:** explanation\`) for parallel points, numbered lists for steps or rankings, and a Markdown table for any comparison of 2+ options across 2+ criteria.
+- Use ## / ### headings cleanly when the answer has 3+ distinct sections; never put a heading on a short answer or greeting. Keep headings short and informative (never "Introduction").
+- Include one brief concrete example when it makes a concept immediately clearer.
+- **Bold** the key terms, numbers and verdict (sparingly for scannability, never whole sentences). Use \`inline code\` and fenced code blocks with a language tag for code, commands and file names.
+- Complex, multi-part, comparison or research answers end with a concise conclusion: "**Bottom line:**" (Hebrew: "**בשורה התחתונה:**") of 1-2 sentences that actually decides or summarizes. Simple factual answers need no conclusion.
+- With web sources: synthesize across them (don't list them one by one), cite inline as [1], [2], say what is confirmed vs. uncertain and how recent it is, then conclude.
+- Hebrew: write natural, fluent, modern Israeli Hebrew (never translated-sounding), accurate gender/grammar, standard terms, numbers and units in Western digits; keep code, commands and product names in English.
 
 Tables & Structured In-Text Data (CRITICAL):
 - When the user asks for a table (e.g., "טבלה", "table", comparisons, word lists, letter/language correspondences, translations, or data summaries) OR when structured tabular format is the best way to explain:
@@ -3723,6 +3786,7 @@ Tables & Structured In-Text Data (CRITICAL):
   | ערך 1 | ערך 2 | ערך 3 |
 - Markdown tables automatically render into beautiful, interactive, sortable, and searchable tables with CSV export in the UI!
 - NEVER wrap table contents in code fences or output raw array fragments (like \`["ג'", "ج"]\`) or broken JSON. Tables must always be formatted as readable in-text Markdown tables or valid \`\`\`loki-table JSON blocks.`,
+    ...((!isFastLevel || asksRichVisual) ? [
     `Interactive UI Response Blocks (USE WHEN VISUAL UI MAKES THE ANSWER CLEARER THAN PLAIN TEXT):
 Beyond Markdown tables, you can embed rich, live interactive UI components inside your answer using fenced JSON blocks (1–2 per complex answer; NEVER use on greetings or trivial 1-line replies):
 - \`\`\`loki-compare (Side-by-Side Feature & Plan Comparison Cards): {"title":"...","items":[{"name":"Option A","icon":"⚡","price":"$19/mo","badge":"Best Overall","recommended":true,"tagline":"...","features":{"Speed":"Ultra","Ease":true,"Offline":false}},{"name":"Option B","price":"Free","features":{"Speed":"Fast","Ease":true,"Offline":true}}],"verdict":"..."}
@@ -3744,7 +3808,6 @@ Beyond Markdown tables, you can embed rich, live interactive UI components insid
 - \`\`\`loki-swot: {"title":"...","strengths":["..."],"weaknesses":["..."],"opportunities":["..."],"threats":["..."]}
 - \`\`\`loki-decision: {"title":"...","criteria":[{"name":"Speed","weight":9}],"options":[{"name":"Option A","scores":[9.2]}]}
 Always ensure valid JSON inside any \`\`\`loki-* block. Use the user's language (Hebrew or English) inside all block titles, labels, and descriptions.`,
-    `Date: ${new Date().toDateString()}.`,
     `Rich answers (use when they genuinely help; never for greetings, one-line facts, or when ANSWER LENGTH is SHORT):
 - Include a short worked example when it makes the idea clearer.
 - For processes, architecture, comparisons, or relationships, you may add a fenced mermaid diagram (\`\`\`mermaid) — flowchart, sequence, or mindmap.
@@ -3752,6 +3815,10 @@ Always ensure valid JSON inside any \`\`\`loki-* block. Use the user's language 
 - When the user asks you to build, make, or try a calculator, quiz, game, simulator, planner, or any other interactive tool, invent a brand-new self-contained mini-app from scratch for THAT request — unique layout, logic, and interactions, not a pre-made template. Put a complete HTML document (inline CSS and JS only, no external scripts except Google Fonts) in a \`\`\`loki-html or \`\`\`html fence.
 - For a calculator, tiny demo, or interactive example in a longer answer, the same \`\`\`loki-html fence (or an existing loki-* visual block) is the right format.
 - Prefer one or two high-quality extras over many.`
+    ] : [
+    `Interactive UI: Only output a self-contained \`\`\`loki-html fence if the user explicitly asks you to build an interactive app, calculator, game, or UI. Otherwise stick to fast, crisp Markdown text, bullets, and Markdown tables.`
+    ]),
+    `Date: ${new Date().toDateString()}.`
   ];
   // Rich Personalization System Prompt Injection
   const persLines = [];
@@ -3791,9 +3858,9 @@ Always ensure valid JSON inside any \`\`\`loki-* block. Use the user's language 
   return L.join('\n');
 }
 function apiHistory(conv, tier, extraSys){
-  const msgs = [{role:'system', content: systemPrompt(tier, extraSys)}];
   const list = conv.messages.filter(m => !m.type && !m.error && !m.pending).slice(-24);
   const lastUser = [...list].reverse().find(m => m.role === 'user');
+  const msgs = [{role:'system', content: systemPrompt(tier, extraSys, lastUser ? lastUser.content : '')}];
   list.forEach(m => {
     if (m.role === 'user'){
       let text = m.content || '';
@@ -3837,7 +3904,8 @@ async function deliberate(msgs, ctx){
   const on = t => work.log(t);
   const lengthId = normalizeAnswerLength(state.answerLength);
   const maxT = ANSWER_LENGTH_TOKENS[lengthId] || 2400;
-  const minWriteMs = (S.typewriter !== false && !S.reduceMotion) ? 1000 : 0;
+  const isFast = level === 0 || level === 4;
+  const minWriteMs = (S.typewriter !== false && !S.reduceMotion) ? (isFast ? 200 : 1000) : 0;
   const base = {tier, level, signal, onStatus: on, turnId: turnId || '', answerLength: lengthId, minWriteMs, bg: ctx.bg};
   if (level === 0){
     on('⚡ Turbo reasoning · streaming live answer');
@@ -3881,16 +3949,24 @@ async function webResearch(question, ctx, deep){
   const {work, signal, tier, level} = ctx;
   const useDeep = !!(deep || ctx.deep);
   if (useDeep && LZ.deepSearch) return deepResearch(question, ctx);
-  if (level === 0 && !deep) return turboResearch(question, ctx);
-  const cfg = deep ? {q:2, r:140, p:6} : (RESEARCH_CFG[level] || RESEARCH_CFG[2]);
-  const engines = ctx.engines || ['ddg', 'wiki', 'hn', 'arxiv', 'so', 'gh', 'openalex', 'reddit'];
-  work.log('Scanning multi-engine internet & academic sources');
-  const cleanQ = question.replace(/^(please\s+)?(search( the web)?( for)?|look up|google|חפש( לי)?|תחפש( לי)?)\s*[:,-]?\s*/i, '').trim().slice(0, 200) || question;
-  const queries = cfg.q > 1 ? [cleanQ, `${cleanQ} facts overview`] : [cleanQ];
-  const rawAll = [];
-  // All queries in parallel (was sequential).
-  (await Promise.all(queries.map(q => { work.log(`Searching internet & academic engines for “${q}”`); return LZ.search(q, cfg.r, signal, {engines}); }))).forEach(res => res.forEach(r => rawAll.push(r)));
-  // Deduplicate & rank by credibility BEFORE reading pages
+  if (level === 0 && !deep && !ctx.explicitSearch) return turboResearch(question, ctx);
+  const cfg = deep ? {q:1, r:150, p:6} : (RESEARCH_CFG[level] || RESEARCH_CFG[2]);
+  const engines = ctx.engines || ['wiki', 'hn'];
+  work.log('🌐 Searching live websites across Google, Bing, DuckDuckGo & News…');
+  const cleanQ = question.replace(/^(please\s+)?(search( the web)?( for)?|look up|google|חפש( לי)?|תחפש( לי)?)\s*[:,-]?\s*/i, '').trim().slice(0, 220) || question;
+  let searchMeta = null;
+  const rawAll = await LZ.search(cleanQ, cfg.r, signal, {
+    engines,
+    deep: useDeep,
+    onMeta: (m) => { searchMeta = m; }
+  });
+  if (searchMeta) {
+    if (searchMeta.groundedAnswer) ctx.groundedAnswer = searchMeta.groundedAnswer;
+    const engs = Array.isArray(searchMeta.enginesUsed) && searchMeta.enginesUsed.length ? searchMeta.enginesUsed.join(', ') : 'Web';
+    const domsCount = searchMeta.distinctDomains || rawAll.length;
+    ctx.sourcesVerdict = `Searched ${searchMeta.scannedCount || rawAll.length} results across ${domsCount} distinct websites (${engs}).`;
+    work.log(`Found ${searchMeta.uniqueCount || rawAll.length} unique websites across ${domsCount} domains`);
+  }
   let verifiedList = dedupeAndVerifyClientSources(rawAll);
   const picked = []; const doms = new Set();
   for (const r of verifiedList){
@@ -3898,38 +3974,29 @@ async function webResearch(question, ctx, deep){
     if (!doms.has(d)){ doms.add(d); picked.push(r); }
     if (picked.length >= cfg.p) break;
   }
-  const queue = picked.slice(0, level === 4 ? 3 : 5);
-  // Read every picked page at once on the server under one ~2.5s deadline (slow pages fall back to snippets).
-  queue.forEach(r => work.log(`Reading & verifying [${r.engine || 'Web'}]`, r.url));
-  await Promise.all(queue.map(async r => { r.text = await LZ.readPage(r.url, deep ? 2400 : 1800, signal, deep ? 3200 : 2500); }));
-
-  // Run server-side resource credibility verification & deduplication pass
-  try {
-    work.log('Verifying resource believability & trust scores');
-    const vr = await fetch('/api/sources/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-      body: JSON.stringify({ query: cleanQ, sources: verifiedList.slice(0, 45), deepCheck: !!deep })
-    });
-    if (vr.ok){
-      const vj = await vr.json();
-      if (Array.isArray(vj.sources) && vj.sources.length){
-        ctx.sourcesVerdict = vj.verdict || '';
-        return vj.sources;
-      }
-    }
-  } catch(_vErr){}
-
+  const queue = picked.slice(0, level === 4 ? 3 : 4);
+  if (queue.length) {
+    queue.forEach(r => work.log(`Reading [${r.engine || 'Web'}]`, r.url));
+    await Promise.all(queue.map(async r => { r.text = await LZ.readPage(r.url, deep ? 2400 : 1800, signal, deep ? 3000 : 2200); }));
+  }
   return verifiedList;
 }
-/* ⚡ Turbo research: one fast cached server search (1.8s per-engine cap), top 3 pages read in parallel with a
-   hard 2.5s budget (snippets are used for any page that is slower), instant heuristic trust scoring (no blocking AI call). */
+/* ⚡ Turbo research: fast single live multi-site search (Google Grounding + Bing + DDG + News), instant trust scoring. */
 async function turboResearch(question, ctx, o = {}){
   const {work, signal} = ctx;
-  const cleanQ = question.replace(/^(please\s+)?(search( the web)?( for)?|look up|google|חפש( לי)?|תחפש( לי)?)\s*[:,-]?\s*/i, '').trim().slice(0, 200) || question;
-  work.log(`⚡ Turbo search: “${cleanQ}”`);
-  const raw = await LZ.search(cleanQ, 60, signal, {fast: true});
+  const cleanQ = question.replace(/^(please\s+)?(search( the web)?( for)?|look up|google|חפש( לי)?|תחפש( לי)?)\s*[:,-]?\s*/i, '').trim().slice(0, 220) || question;
+  work.log(`🌐 Live web search: “${cleanQ}”`);
+  let searchMeta = null;
+  const raw = await LZ.search(cleanQ, 70, signal, {
+    fast: true,
+    onMeta: (m) => { searchMeta = m; }
+  });
+  if (searchMeta) {
+    if (searchMeta.groundedAnswer) ctx.groundedAnswer = searchMeta.groundedAnswer;
+    if (searchMeta.distinctDomains) {
+      ctx.sourcesVerdict = `Searched ${searchMeta.scannedCount || raw.length} results across ${searchMeta.distinctDomains} websites.`;
+    }
+  }
   const verifiedList = dedupeAndVerifyClientSources(raw);
   const picked = []; const doms = new Set();
   for (const r of verifiedList){
@@ -3937,15 +4004,17 @@ async function turboResearch(question, ctx, o = {}){
     if (!doms.has(d)){ doms.add(d); picked.push(r); }
     if (picked.length >= 3) break;
   }
-  work.log(`Reading top ${picked.length} sources in parallel`);
-  await Promise.all(picked.map(async r => { r.text = await LZ.readPage(r.url, 1500, signal, o.readMs || 2500); }));
-  work.log(`Verified ${verifiedList.length} sources (instant trust scoring)`);
+  if (picked.length && !ctx.groundedAnswer) {
+    work.log(`Reading top ${picked.length} websites in parallel`);
+    await Promise.all(picked.map(async r => { r.text = await LZ.readPage(r.url, 1500, signal, o.readMs || 2200); }));
+  }
+  work.log(`Verified ${verifiedList.length} live web sources`);
   return verifiedList;
 }
 function sourcesContext(sources){
-  const unique = dedupeAndVerifyClientSources(sources).slice(0, 10);
+  const unique = dedupeAndVerifyClientSources(sources).slice(0, 14);
   if (!unique.length) return '';
-  return `VERIFIED WEB & ACADEMIC RESOURCES (Credibility-Checked — base your answer primarily on Trustable 90%+ and Reliable 70–89% sources, cite inline with [n], and explicitly flag any claim that only comes from Verify Carefully or Low Trust sources):\n\n` + unique.map((s, i) => `[${i + 1}] [Trust: ${s.trustScore}% · ${s.trustLabel}] (${s.engine || 'Web'}) ${s.title} — ${s.url}\nCheck: ${s.trustReason || 'Evaluated'}\n${(s.text || s.snippet || '').slice(0, 620)}`).join('\n\n---\n\n');
+  return `LIVE VERIFIED INTERNET SOURCES (Scanned across multiple real websites right now — synthesize a clear, accurate, direct answer using these live facts, cite inline with [n], and NEVER claim you cannot access the internet):\n\n` + unique.map((s, i) => `[${i + 1}] [Trust: ${s.trustScore}% · ${s.trustLabel}] (${s.engine || 'Web'}) ${s.title} — ${s.url}\n${(s.text || s.snippet || '').slice(0, 560)}`).join('\n\n---\n\n');
 }
 
 async function toolAnalyzePhoto(msgs, um, ctx){
@@ -4708,7 +4777,33 @@ const SLASH_ALIASES = {
 function getSlashCatalog(){
   const items = [];
   const seen = new Set();
-  // Ensure "/mini mind" and "/deep research" are prominent at the top alongside all Labs features
+  if (window.LZCapabilities && Array.isArray(window.LZCapabilities.CAPABILITIES)) {
+    window.LZCapabilities.CAPABILITIES.forEach(c => {
+      seen.add(c.id);
+      items.push({
+        id: c.id,
+        cmd: c.cmd,
+        altCmd: '/' + c.id,
+        icon: c.icon,
+        name: c.name,
+        desc: c.desc,
+        both: true,
+        isCapability: true,
+      });
+    });
+  }
+  seen.add('quiz');
+  items.push({
+    id: 'quiz',
+    cmd: '/test ',
+    altCmd: '/quiz ',
+    icon: '📝',
+    name: 'Interactive Test & Quiz (5–20 Qs)',
+    desc: 'Generate a 5–20 question test with multiple-choice & open written questions + end-of-test score',
+    both: true,
+    isCapability: true,
+  });
+  // Ensure "/mini mind" and "/deep research" are prominent alongside all Labs features
   LABS.forEach(l => {
     if (seen.has(l.id)) return;
     seen.add(l.id);
@@ -4816,12 +4911,16 @@ async function send(){
   const ta = $('#prompt'); const text = ta.value.trim();
   if (!text && !state.attachments.length) return;
 
-  // Handle "/" Slash Command to open floating Lab UI
-  if (text.startsWith('/')){
+  // Handle "/" Slash Command to open floating Lab UI (skip our inline chat capabilities & /test /quiz so send() runs them in chat!)
+  const inlineCapHit = window.LZCapabilities && typeof LZCapabilities.detectCommand === 'function'
+    ? LZCapabilities.detectCommand(text)
+    : null;
+  const isInlineQuizCmd = /^\s*\/(test|quiz|exam)\b/i.test(text);
+  if (text.startsWith('/') && !inlineCapHit && !isInlineQuizCmd){
     const match = resolveSlashCommand(text);
     const menu = $('#slashMenu');
     if (menu) menu.hidden = true;
-    if (match){
+    if (match && match.id !== 'quiz'){
       ta.value = '';
       autosize();
       updateSend();
@@ -4914,6 +5013,41 @@ async function runAssistant(mode){
     return;
   }
 
+  const inlineCapHit = !hasImages && !hasVideo && !hasFiles && window.LZCapabilities && typeof LZCapabilities.detectCommand === 'function'
+    ? LZCapabilities.detectCommand(um.content || '')
+    : null;
+  if (inlineCapHit && window.LZCapabilities && typeof LZCapabilities.runCapability === 'function'){
+    const bmCap = { id: uid(), role: 'assistant', content: '', ts: Date.now(), tier: state.model, pending: true };
+    c.messages.push(bmCap);
+    const capRow = el('div', 'msg bot busy'); capRow.dataset.id = bmCap.id;
+    capRow.innerHTML = `<div class="avatar">${LOGO_SVG}</div><div class="bubble-col"><div class="work-row"><span class="orb"></span><span class="work-status">${isHeb(um.content || '') ? 'מפעיל כלי AI אינטראקטיבי...' : 'Running interactive AI tool...'}</span></div></div>`;
+    $('#messages').appendChild(capRow);
+    scrollDown(true);
+    state.busy = true;
+    try {
+      const capRes = await LZCapabilities.runCapability(inlineCapHit.id, inlineCapHit.arg, { conv: c, um });
+      bmCap.pending = false;
+      bmCap.content = (capRes && capRes.content) || '';
+      if (capRes && capRes.capabilityCard) bmCap.capabilityCard = capRes.capabilityCard;
+      const fresh = renderMsg(bmCap);
+      capRow.replaceWith(fresh);
+      sound('done');
+    } catch (capErr) {
+      bmCap.pending = false;
+      bmCap.error = true;
+      bmCap.content = '⚠️ ' + (capErr && capErr.message ? capErr.message : 'Could not run interactive tool.');
+      const fresh = renderMsg(bmCap);
+      capRow.replaceWith(fresh);
+    } finally {
+      state.busy = false;
+      updateSend();
+      persist(c);
+      renderHistory();
+      scrollDown(true);
+    }
+    return;
+  }
+
   if (tool && tool.stark && tier === 'fera'){
     const m = {id: uid(), role:'assistant', type:'upgrade', feature: tool.id, ts: Date.now(), mode: tool.id};
     c.messages.push(m); $('#messages').appendChild(renderMsg(m)); scrollDown(true); persist(c); if (window.Mascot) Mascot.set('oops'); return;
@@ -4949,9 +5083,13 @@ async function runAssistant(mode){
     if (isFg() && state._rerenderAfterBusy){ state._rerenderAfterBusy = false; renderMessages(); }
   };
 
-  // Enforce Lokizen 4.0 Stark Message Limit (Free: 10 / 6h unless starkAuthorized, Pro: 85 / 6h, Ultimate: Unlimited)
-  if (tier === 'stark'){
-    if (window.LZAuth && LZAuth.consumeFeatureQuota){
+  // Stark quota is enforced atomically by the server on /api/chat/stream (0 extra round-trips on chat!).
+  // Only pre-check synchronously via cached state above (isStarkLockedForUser) or for non-chat creation tasks.
+  const isFastChatTurn = (level === 0 || level === 4) && !(tool || isEdit || intent === 'video' || intent === 'image' || intent === 'slides' || intent === 'model3d' || intent === 'file' || intent === 'widget');
+  if (tier === 'stark' && !isFastChatTurn){
+    const curUser = window.LZAuth && LZAuth.getUser ? LZAuth.getUser() : null;
+    const isExemptStark = !curUser || curUser.isUnlimited || curUser.starkAuthorized || getUserPlanTier() === 'ultimate';
+    if (!isExemptStark && window.LZAuth && LZAuth.consumeFeatureQuota){
       const qRes = await LZAuth.consumeFeatureQuota('stark_msg', 1, turnId);
       if (qRes && qRes.allowed === false){
         const plan = getUserPlanTier();
@@ -5049,12 +5187,12 @@ async function runAssistant(mode){
         ? (intent === 'image' || isEdit ? 'Preparing AI image generator…' : intent === 'video' ? 'Preparing AI video generator…' : 'Analyzing task & planning build…')
         : (['Thinking · Low (Turbo 10×)', 'Thinking · Medium', 'Thinking · High — careful reasoning', 'Thinking · Extra High — draft + self-review', 'Thinking · Ultra'][level] || 'Analyzing request & planning')
     );
-    // Recall relevant facts from the AI Self-Learning Community Knowledge Base (non-blocking 400ms budget)
+    // Recall relevant facts from the AI Self-Learning Community Knowledge Base (skip pre-hop in Turbo/Ultra for 0ms startup)
     let learnedKnowledgeCtx = '';
-    if (!isSmallTalk(um.content) && String(um.content || '').trim().length >= 8){
+    if (!(level === 0 || level === 4) && !isSmallTalk(um.content) && String(um.content || '').trim().length >= 8){
       try {
         const knCtl = new AbortController();
-        const knTimer = setTimeout(() => knCtl.abort(), 450);
+        const knTimer = setTimeout(() => knCtl.abort(), 220);
         const kr = await fetch('/api/knowledge/query', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -5084,6 +5222,7 @@ async function runAssistant(mode){
       result = await toolAnalyzePhoto(msgs, um, ctx);
     } else {
       let sources = null, m2 = msgs;
+      const implicitSearchHit = RX.liveFacts.test(um.content || '');
       if (hasImages || hasVideo) {
         const nImg = (um.attachments || []).filter(a => a.kind === 'image').length;
         work.log(hasVideo
@@ -5091,24 +5230,25 @@ async function runAssistant(mode){
           : (nImg > 1 ? 'Reading all ' + nImg + ' photos in parallel…' : 'Reading attached image…'));
         const visionTaskSys = '\n\n[IMAGE & TASK EXECUTION DIRECTIVE: The user attached media. Read all text, numbers, code, diagrams, or visual details with 100% precision. If there are several photos, answer each one in its own section (Photo 1, Photo 2, …) and finish with a comparison and summary. If a video is attached, describe what happens on a timeline. If the media contains a task, question, homework problem, math equation, or coding challenge, solve it step-by-step in the user\'s language.]';
         m2 = [{role:'system', content: (msgs[0]?.content || '') + visionTaskSys}, ...msgs.slice(1)];
-      } else if (ctx.deep || intent === 'search' || (!isSmallTalk(um.content) && ((state.model === 'stark' && RX.searchImplicit.test(um.content || '')) || RX.liveFacts.test(um.content || '')))){
+      } else if (ctx.deep || intent === 'search' || (!isSmallTalk(um.content) && implicitSearchHit)){
         didSearch = true;
         work.root.hidden = false;
         const explicitSearch = intent === 'search' || ctx.deep;
-        // Fera current-events questions get grounded sources too, but on a hard ~1.8s budget so the
-        // answer still starts fast (if search is slow we answer without sources rather than stall).
+        ctx.explicitSearch = explicitSearch;
+        const implicitBudgetMs = (level === 0 || level === 4) ? 1000 : 1400;
         sources = explicitSearch
           ? await webResearch(um.content, ctx)
           : await Promise.race([
-              turboResearch(um.content, ctx, {readMs: 900}).catch(() => []),
-              new Promise(r => setTimeout(() => r([]), 1800))
+              turboResearch(um.content, ctx, {readMs: (level === 0 || level === 4) ? 550 : 900}).catch(() => []),
+              new Promise(r => setTimeout(() => r([]), implicitBudgetMs))
             ]);
-        if (sources.length){
-          work.log(`Verified ${sources.length} unique resources & writing a grounded answer`);
-          const deepBrief = ctx.deepConclusion
-            ? ('\n\nDEEP SEARCH CONCLUSION (factual backbone from ' + (ctx.deepMeta && ctx.deepMeta.uniqueCount || sources.length) + ' sites; write the user-facing answer at the selected length and cite [n]):\n' + ctx.deepConclusion)
+        const liveGrounding = ctx.deepConclusion || ctx.groundedAnswer || '';
+        if ((sources && sources.length) || liveGrounding){
+          work.log(`Verified ${(sources && sources.length) || 0} live websites & writing grounded answer`);
+          const groundingBrief = liveGrounding
+            ? ('\n\nLIVE GOOGLE SEARCH GROUNDED BRIEF (Real-time facts verified across the live web right now — use these concrete facts, numbers, dates and names in your answer, formatted naturally in the user\'s language and citing [n] from the sources list):\n' + liveGrounding)
             : '';
-          m2 = [{role:'system', content: msgs[0].content + '\n\n' + sourcesContext(sources) + deepBrief}, ...msgs.slice(1)];
+          m2 = [{role:'system', content: msgs[0].content + '\n\n' + sourcesContext(sources || []) + groundingBrief}, ...msgs.slice(1)];
         }
       }
       if (hasFiles) work.log('Reading your file' + ((um.attachments || []).filter(x => x.kind === 'file').length > 1 ? 's' : '') + '…');
@@ -5146,14 +5286,20 @@ async function runAssistant(mode){
       if (webImageQueries.length && !state.onReply) {
         work.log(`Fetching portrait image for: ${webImageQueries.join(', ')}`);
         try {
+          const imgCtl = new AbortController();
+          const imgTimer = setTimeout(() => imgCtl.abort(), 1200);
+          const onOuterAbort = () => imgCtl.abort();
+          turn.ctl.signal.addEventListener('abort', onOuterAbort, { once: true });
           const batches = await Promise.all(webImageQueries.map(q =>
             fetch('/api/images/search', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              signal: turn.ctl.signal,
+              signal: imgCtl.signal,
               body: JSON.stringify({ query: q, limit: 1 })
             }).then(r => r.ok ? r.json() : { images: [] }).catch(() => ({ images: [] }))
           ));
+          clearTimeout(imgTimer);
+          turn.ctl.signal.removeEventListener('abort', onOuterAbort);
           const seenUrls = new Set();
           for (const b of batches) {
             for (const im of (b.images || []).slice(0, 1)) {
@@ -6471,6 +6617,7 @@ function renderSettings(){
 function bind(){
   $('#newChat').onclick = startNewChat;
   $('#openLokiCode').onclick = () => { showView(state.view === 'code' ? 'chat' : 'code'); closeSidebarMobile(); };
+  $('#openLessons') && ($('#openLessons').onclick = () => { showView(state.view === 'lessons' ? 'chat' : 'lessons'); closeSidebarMobile(); });
   $('#openTeamChat') && ($('#openTeamChat').onclick = () => { showView(state.view === 'teamchat' ? 'chat' : 'teamchat'); closeSidebarMobile(); });
   $('#openLokiBot') && ($('#openLokiBot').onclick = () => { showView(state.view === 'lokibot' ? 'chat' : 'lokibot'); closeSidebarMobile(); });
   $('#openDownloadApp') && ($('#openDownloadApp').onclick = () => { showView(state.view === 'download' ? 'chat' : 'download'); closeSidebarMobile(); });
@@ -6487,14 +6634,7 @@ function bind(){
     if (window.Changelog) Changelog.open();
     document.body.classList.remove('sb-open');
   };
-  addEventListener('hashchange', () => { const v = location.hash.slice(1); if (['code', 'benches', 'teamchat', 'sharedhub', 'event', 'download', 'lokibot'].includes(v)) showView(v); });
-  // tactile ripple on buttons (transform/opacity only)
-  document.addEventListener('pointerdown', e => {
-    const b = e.target.closest('.btn-primary,.btn-new,.chip,.lc-go,.send,.q-opt,.ls-subject,.call-btn'); if (!b || S.reduceMotion || S.perfMode) return;
-    const r = b.getBoundingClientRect(), d = Math.max(r.width, r.height);
-    const sp = el('span', 'ripple'); sp.style.cssText = `width:${d}px;height:${d}px;left:${e.clientX - r.left - d / 2}px;top:${e.clientY - r.top - d / 2}px`;
-    b.appendChild(sp); setTimeout(() => sp.remove(), 650);
-  }, {passive:true});
+  addEventListener('hashchange', () => { const v = location.hash.slice(1); if (['code', 'lessons', 'benches', 'teamchat', 'sharedhub', 'event', 'download', 'lokibot'].includes(v)) showView(v); });
   $('#openSettings').onclick = () => { if (window.LZRoute) LZRoute.prefetchApps(); renderSettings(); openModal('settings'); closeSidebarMobile(); };
   $('#historySearch').oninput = renderHistory;
   $('#historySearchClear') && ($('#historySearchClear').onclick = () => {
@@ -6560,6 +6700,27 @@ function bind(){
     if (a === 'export') return exportCurrentChat();
     if (a === 'upload') return $('#fileInput').click();
     if (a === 'formula') return openLab('formula');
+    if (a === 'games') {
+      if (window.LZGames && LZGames.openGame) LZGames.openGame('chess', { lang: S.lang === 'he' ? 'he' : 'he' });
+      return;
+    }
+    if (a === 'quiz') {
+      const ta = $('#prompt');
+      if (ta) {
+        ta.value = S.lang === 'he'
+          ? 'תעשה לי מבחן של 8 שאלות (כולל שאלות אמריקאיות ושאלות פתוחות) על '
+          : 'Make me a test with 8 questions (option questions and open questions) about ';
+        autosize();
+        updateSend();
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      }
+      return;
+    }
+    if (a === 'urlreader' || a === 'flashcards' || a === 'datachart' || a === 'decision') {
+      if (window.LZCapabilities && LZCapabilities.primeComposer) LZCapabilities.primeComposer(a);
+      return;
+    }
     if (a === 'deep-search'){
       if (isStarkLockedForUser()){
         toast('🔒 Lokizen 4.0 Stark limit reached! Upgrade your plan to unlock Deep search.', 'err');

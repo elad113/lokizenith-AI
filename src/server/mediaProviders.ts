@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { chainCooldowns, getHotProviderSlots } from './aiKeyChain.ts';
 
 export interface ImageGenResult {
   dataUrl: string;
@@ -29,15 +30,6 @@ export interface ProviderInfo {
   kind: 'neural-video' | 'image';
   configured: boolean;
   freeTier: boolean;
-}
-
-function getGenAIClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-  });
 }
 
 function detectImageMime(buf: Buffer): string | null {
@@ -171,9 +163,13 @@ export async function generateImageChain(
   const seed = Math.floor(Math.random() * 1_000_000_000);
   const chainTried: string[] = [];
 
-  // 1. Gemini Image Generation (if GEMINI_API_KEY configured)
-  const ai = getGenAIClient();
-  if (ai) {
+  // 1. Gemini Image Generation (rotates GEMINI_API_KEY / GEMINI_API_KEY_2..10 / GEMINI_API_KEYS pool)
+  const geminiSlots = getHotProviderSlots('gemini');
+  for (const slot of geminiSlots) {
+    const ai = new GoogleGenAI({
+      apiKey: slot.apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
     chainTried.push('gemini-3.1-flash-lite-image');
     try {
       const res = await ai.models.generateContent({
@@ -213,7 +209,9 @@ export async function generateImageChain(
           chainTried,
         };
       }
-    } catch (_e) {}
+    } catch (_e) {
+      chainCooldowns.coolForHttpStatus(slot.slotId, 429);
+    }
   }
 
   // 2. Fal.ai FLUX Schnell (if FAL_KEY configured)

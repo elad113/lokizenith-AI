@@ -1,6 +1,6 @@
 import type express from 'express';
 import { isSafePublicHttpUrl } from '../utils/guestAndLength.ts';
-import { verifyAndRankSources, type RawSourceInput } from '../utils/sourceCredibility.ts';
+import { runLiveMultiSiteWebSearch } from './liveWebSearch.ts';
 
 function stripHtmlToText(html: string, maxChars: number = 6000): string {
   return String(html || '')
@@ -25,9 +25,12 @@ export async function fetchPageTextSafe(url: string, maxChars: number = 4500, ti
     const res = await fetch(url, {
       signal: AbortSignal.timeout(Math.min(5000, Math.max(1000, timeoutMs))),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; LokizenithBot/2.7; +https://lokizenith.com)',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         Accept: 'text/html, text/plain, application/json;q=0.9',
+        'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
       },
+      redirect: 'follow',
     });
     if (!res.ok) return '';
     const ct = String(res.headers.get('content-type') || '').toLowerCase();
@@ -37,107 +40,6 @@ export async function fetchPageTextSafe(url: string, maxChars: number = 4500, ti
   } catch {
     return '';
   }
-}
-
-async function safeJson(url: string, timeoutMs: number = 4500): Promise<any> {
-  try {
-    const r = await fetch(url, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'User-Agent': 'LokizenithAI/2.7 (+https://lokizenith.com)' },
-    });
-    if (!r.ok) return null;
-    return await r.json();
-  } catch {
-    return null;
-  }
-}
-
-async function gatherDeepSources(query: string): Promise<RawSourceInput[]> {
-  const q = encodeURIComponent(query);
-  const [wiki, hn, openalex, wikidata, openlib, so, gh] = await Promise.all([
-    safeJson(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${q}&srlimit=25&format=json`),
-    safeJson(`https://hn.algolia.com/api/v1/search?query=${q}&hitsPerPage=25`),
-    safeJson(`https://api.openalex.org/works?search=${q}&per-page=25`),
-    safeJson(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${q}&language=en&limit=15&format=json`),
-    safeJson(`https://openlibrary.org/search.json?q=${q}&limit=15`),
-    safeJson(`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${q}&site=stackoverflow&pagesize=20`),
-    safeJson(`https://api.github.com/search/repositories?q=${q}&per_page=15`),
-  ]);
-
-  const raw: RawSourceInput[] = [];
-  for (const item of wiki?.query?.search || []) {
-    if (item?.title) {
-      raw.push({
-        title: `${item.title} — Wikipedia`,
-        url: `https://en.wikipedia.org/wiki/${encodeURIComponent(String(item.title).replace(/\s+/g, '_'))}`,
-        snippet: stripHtmlToText(String(item.snippet || ''), 320),
-        engine: 'Wikipedia',
-      });
-    }
-  }
-  for (const hit of hn?.hits || []) {
-    const u = hit?.url || (hit?.objectID ? `https://news.ycombinator.com/item?id=${hit.objectID}` : '');
-    if (u && hit?.title) {
-      raw.push({
-        title: String(hit.title),
-        url: String(u),
-        snippet: `Hacker News · ${hit.points || 0} points · ${hit.num_comments || 0} comments`,
-        engine: 'HackerNews',
-      });
-    }
-  }
-  for (const w of openalex?.results || []) {
-    const u = w?.doi || w?.primary_location?.landing_page_url || w?.id;
-    if (u && w?.title) {
-      raw.push({
-        title: String(w.title),
-        url: String(u),
-        snippet: `Academic Paper (${w.publication_year || 'n/d'}) · ${w.cited_by_count || 0} citations`,
-        engine: 'OpenAlex',
-      });
-    }
-  }
-  for (const it of wikidata?.search || []) {
-    if (it?.id) {
-      raw.push({
-        title: `${it.label || it.id} — Wikidata`,
-        url: `https://www.wikidata.org/wiki/${it.id}`,
-        snippet: String(it.description || 'Structured knowledge graph entity'),
-        engine: 'Wikidata',
-      });
-    }
-  }
-  for (const d of openlib?.docs || []) {
-    if (d?.key && d?.title) {
-      raw.push({
-        title: `${d.title}${d.first_publish_year ? ` (${d.first_publish_year})` : ''}`,
-        url: `https://openlibrary.org${d.key}`,
-        snippet: `Book Archive · ${Array.isArray(d.author_name) ? d.author_name.slice(0, 2).join(', ') : 'Reference'}`,
-        engine: 'OpenLibrary',
-      });
-    }
-  }
-  for (const qItem of so?.items || []) {
-    if (qItem?.link && qItem?.title) {
-      raw.push({
-        title: stripHtmlToText(String(qItem.title), 180),
-        url: String(qItem.link),
-        snippet: `StackOverflow · Score ${qItem.score || 0} · ${qItem.answer_count || 0} answers`,
-        engine: 'StackOverflow',
-      });
-    }
-  }
-  for (const repo of gh?.items || []) {
-    if (repo?.html_url && repo?.full_name) {
-      raw.push({
-        title: `${repo.full_name} — GitHub`,
-        url: String(repo.html_url),
-        snippet: `${repo.description || 'Open-source repository'} · ★ ${repo.stargazers_count || 0}`,
-        engine: 'GitHub',
-      });
-    }
-  }
-  return raw;
 }
 
 export function registerDeepSearchRoutes(app: express.Express): void {
@@ -151,7 +53,7 @@ export function registerDeepSearchRoutes(app: express.Express): void {
       const timeoutMs = Math.min(4500, Math.max(1000, Number(req.body?.timeoutMs) || 3200));
 
       const entries = await Promise.all(
-        urls.map(async (u: string) => [u, await fetchPageTextSafe(u, maxChars, timeoutMs)] as const)
+        urls.map(async (u: string) => [u, await fetchPageTextSafe(u, maxChars, timeoutMs)] as const),
       );
       const pages: Record<string, string> = {};
       for (const [u, txt] of entries) {
@@ -163,7 +65,7 @@ export function registerDeepSearchRoutes(app: express.Express): void {
     }
   });
 
-  // Streaming Deep Search (100+ sites, multi-engine scan, reading top sources, per-source trust meter)
+  // Streaming Deep Search (Google Search Grounding + Live Web/News/Research Engines + Full Page Reading)
   app.post('/api/search/deep', async (req, res) => {
     const query = String(req.body?.query || '').trim();
     if (!query) {
@@ -180,42 +82,60 @@ export function registerDeepSearchRoutes(app: express.Express): void {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
+    const t0 = Date.now();
     try {
-      sendEvent('progress', { stage: 'searching', message: `Scanning research & web indexes for "${query}"…`, scanned: 0 });
-      const raw = await gatherDeepSources(query);
-      const summary = verifyAndRankSources(raw, query);
+      sendEvent('progress', {
+        stage: 'searching',
+        message: `Searching live internet, news & research engines for "${query}"…`,
+        scanned: 0,
+      });
+
+      const searchData = await runLiveMultiSiteWebSearch({
+        query,
+        limit: 160,
+        deep: true,
+        fast: false,
+        includeGrounding: true,
+      });
 
       sendEvent('progress', {
         stage: 'reading',
-        message: `Scanned ${raw.length} sources (${summary.totalUnique} unique) — reading top authoritative pages…`,
-        scanned: raw.length,
-        unique: summary.totalUnique,
+        message: `Found ${searchData.uniqueCount} unique websites across ${searchData.distinctDomains} domains (${searchData.enginesUsed.join(', ')}) — reading top pages…`,
+        found: searchData.scannedCount,
+        unique: searchData.uniqueCount,
+        read: 0,
       });
 
-      const topToRead = summary.sources.slice(0, 6);
+      // Read top 6 distinct non-redirect websites in parallel under a 3.2s cap
+      const topToRead = searchData.sources.slice(0, 6);
+      let readCount = 0;
       const extracts = await Promise.all(
         topToRead.map(async (s) => {
           const text = await fetchPageTextSafe(s.url, 2600, 3200);
+          if (text && text.length > 80) readCount++;
           return { ...s, text: text || s.snippet };
-        })
+        }),
       );
 
-      const finalSources = [...extracts, ...summary.sources.slice(topToRead.length)];
+      const finalSources = [...extracts, ...searchData.sources.slice(topToRead.length)];
 
       sendEvent('result', {
         ok: true,
         query,
-        scannedCount: raw.length,
-        uniqueCount: summary.totalUnique,
-        avgTrust: summary.avgTrust,
-        trustBreakdown: {
-          trustable: summary.trustableCount,
-          reliable: summary.reliableCount,
-          verify: summary.verifyCount,
-          low: summary.lowCount,
-        },
+        scannedCount: searchData.scannedCount,
+        uniqueCount: searchData.uniqueCount,
+        distinctDomains: searchData.distinctDomains,
+        readCount,
+        enginesUsed: searchData.enginesUsed,
+        queriesUsed: searchData.queriesUsed,
+        avgTrust: searchData.avgTrust,
+        overallTrust: searchData.avgTrust,
+        trustBreakdown: searchData.trustBreakdown,
+        conclusion: searchData.groundedAnswer,
+        groundedAnswer: searchData.groundedAnswer,
         sources: finalSources,
         results: finalSources,
+        elapsedMs: Date.now() - t0,
       });
     } catch (e: any) {
       sendEvent('result', {
@@ -223,9 +143,11 @@ export function registerDeepSearchRoutes(app: express.Express): void {
         query,
         scannedCount: 0,
         uniqueCount: 0,
+        readCount: 0,
         avgTrust: 0,
         sources: [],
         results: [],
+        conclusion: '',
         error: e?.message || 'Deep search error',
       });
     } finally {

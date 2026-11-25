@@ -190,3 +190,28 @@ export function suppressAccidentalUserWipe(
     previousUserCount > 1;
   return { deletes: blocked ? [] : userDiff.deletes, blocked };
 }
+
+export function isFirestoreQuotaError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '');
+  return /RESOURCE_EXHAUSTED|Quota(?:\s+limit)?\s+exceeded|Free daily read units/i.test(msg);
+}
+
+export function isFirestoreAuthOrPermError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '');
+  return /PERMISSION_DENIED|UNAUTHENTICATED|Could not load the default credentials|insufficient permissions/i.test(msg);
+}
+
+export function shouldFallbackToDiskOnBootError(err: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
+  const forcedFirestore = ['firestore', 'cloud'].includes(
+    String(env.LZ_STORAGE || '').trim().toLowerCase()
+  );
+  if (forcedFirestore) return false;
+  return isFirestoreAuthOrPermError(err) || isFirestoreQuotaError(err);
+}
+
+export function buildFirestoreUpgradeUrl(projectId: string, databaseId: string): string {
+  const proj = encodeURIComponent(String(projectId || '').trim());
+  const db = encodeURIComponent(String(databaseId || '(default)').trim() || '(default)');
+  return `https://console.firebase.google.com/project/${proj}/firestore/databases/${db}/data?openUpgradeDialog=true`;
+}
+

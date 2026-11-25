@@ -547,7 +547,7 @@ const PAT = [
   [/^Visiting (.+)$/, {he:'מבקר ב-$1', ar:'أزور $1'}],
   [/^Reading (\S+\.\S+)$/, {he:'קורא את $1', ar:'أقرأ $1'}]
 ];
-const SKIP = '.bubble,.md,code,pre,textarea,.lc-code,.lc-out,.history .t,[data-noi18n],iframe,.co-caps,.gi-prompt,.work-log .lx,.kbd-raw';
+const SKIP = '.bubble,.md,code,pre,textarea,.lc-code,.lc-out,.history .t,[data-noi18n],iframe,.co-caps,.gi-prompt,.work-log .lx,.kbd-raw,.quiz,.ls-msgs,#lessonsView';
 let lang = 'en', obs = null;
 const orig = new WeakMap();      // text node → original english
 const origAttr = new WeakMap();  // element → {attr: original}
@@ -561,7 +561,7 @@ function tr(s){
   return s;
 }
 function t(s){ if (lang === 'en') return s; const h = DICT.get(s); return h ? h[lang] : tr(s); }
-function skip(n){ const e = n.nodeType === 1 ? n : n.parentElement; return !e || !!e.closest(SKIP) || e.tagName === 'SCRIPT' || e.tagName === 'STYLE'; }
+function skip(n){ const e = n.nodeType === 1 ? n : n.parentElement; return !e || !!e.closest(SKIP) || e.tagName === 'SCRIPT' || e.tagName === 'STYLE' || e.tagName === 'CANVAS'; }
 function doText(n){
   if (skip(n)) return;
   const cur = n.nodeValue; const o = orig.get(n);
@@ -588,22 +588,44 @@ function doAttrs(e){
   if (o) origAttr.set(e, o);
 }
 function walk(root){
+  if (!root) return;
   if (root.nodeType === 3) return doText(root);
-  if (root.nodeType !== 1 || skip(root) && !root.matches('textarea,input')) { if (root.nodeType === 1 && root.matches && root.matches('textarea,input')) doAttrs(root); return; }
+  if (root.nodeType !== 1 || (skip(root) && !root.matches('textarea,input'))) { if (root.nodeType === 1 && root.matches && root.matches('textarea,input')) doAttrs(root); return; }
   doAttrs(root);
   const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {acceptNode: n => n.nodeType === 1 ? (n.matches(SKIP) && !n.matches('textarea,input') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) : NodeFilter.FILTER_ACCEPT});
-  let n; while ((n = w.nextNode())){ if (n.nodeType === 3) doText(n); else doAttrs(n); }
+  let n, steps = 0;
+  while ((n = w.nextNode()) && steps++ < 2500){
+    if (n.nodeType === 3) doText(n); else doAttrs(n);
+  }
 }
 let queue = new Set(), sched = 0;
-function flush(){ sched = 0; obs && obs.disconnect(); queue.forEach(n => n.isConnected && walk(n)); queue.clear(); if (lang !== 'en') observe(); }
+function flush(){
+  sched = 0;
+  obs && obs.disconnect();
+  try {
+    queue.forEach(n => {
+      if (!n || !n.isConnected) return;
+      if (n === document.body || n === document.documentElement) doAttrs(n);
+      else walk(n);
+    });
+  } catch(_){}
+  queue.clear();
+  if (lang !== 'en') observe();
+}
 function observe(){
   if (!obs) obs = new MutationObserver(ms => {
     for (const m of ms){
-      if (m.type === 'childList') m.addedNodes.forEach(n => queue.add(n));
-      else if (m.type === 'characterData') queue.add(m.target);
-      else if (m.type === 'attributes') queue.add(m.target);
+      if (m.type === 'childList'){
+        m.addedNodes.forEach(n => { if (!skip(n)) queue.add(n); });
+      } else if (m.type === 'characterData'){
+        if (!skip(m.target)) queue.add(m.target);
+      } else if (m.type === 'attributes'){
+        if (m.target !== document.body && m.target !== document.documentElement && !skip(m.target)){
+          queue.add(m.target);
+        }
+      }
     }
-    if (!sched) sched = requestAnimationFrame(flush);
+    if (queue.size && !sched) sched = requestAnimationFrame(flush);
   });
   obs.observe(document.body, {childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTRS});
 }
